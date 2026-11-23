@@ -1,0 +1,1 @@
+import 'dotenv/config';import {Worker} from 'bullmq';import IORedis from 'ioredis';const connection=new IORedis(process.env.REDIS_URL||'redis://localhost:6379',{maxRetriesPerRequest:null});new Worker('homelab-jobs',async job=>{console.log('Processing job',job.name,job.id);return {accepted:true}},{connection});console.log('Homelab Central worker ready');

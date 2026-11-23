@@ -1,0 +1,1 @@
+Initial bootstrap: `npx prisma db push`. After schema stabilizes, generate and commit migrations with `npx prisma migrate dev --name init`, then use `npx prisma migrate deploy` in production.

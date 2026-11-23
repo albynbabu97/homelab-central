@@ -1,0 +1,19 @@
+[Unit]
+Description=Homelab Central restricted host helper
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=homelab-helper
+Group=homelab-helper
+WorkingDirectory=/opt/homelab/stacks/homelab-central/host-helper
+EnvironmentFile=/etc/homelab-central/host-helper.env
+ExecStart=/usr/bin/python3 -m uvicorn agent:app --host 0.0.0.0 --port 4200
+Restart=on-failure
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run
+
+[Install]
+WantedBy=multi-user.target
