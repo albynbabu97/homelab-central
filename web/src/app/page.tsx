@@ -1,5 +1,7 @@
-"use client";
-import { useEffect, useState, type ReactNode } from 'react';
+'use client';
+import { useEffect, useState, Suspense, type ReactNode } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { selfhIconUrl } from '@/lib/selfhIcon';
 import {
   Activity,
   AppWindow,
@@ -42,8 +44,18 @@ type AppItem = {
   name: string;
   url: string;
   category?: string;
+  description?: string;
   healthStatus?: string;
   icon?: string;
+  sortOrder?: number;
+};
+type AppDraft = {
+  name: string;
+  url: string;
+  category: string;
+  description: string;
+  sortOrder: number;
+  icon: string;
 };
 type NoticeTone = 'success' | 'error' | 'warning';
 const nav = [
@@ -73,6 +85,20 @@ const appSubtitle = (a: AppItem) => {
   if (!a.healthStatus || a.healthStatus === 'unknown') return category;
   return `${category} · ${a.healthStatus}`;
 };
+const NAV_IDS = new Set(
+  ['overview', 'applications', 'docker', 'monitoring', 'maintenance', 'backups', 'updates', 'domains', 'activity', 'settings'],
+);
+function AppIconDisplay({ icon, size = 34 }: { icon?: string; size?: number }) {
+  const src = selfhIconUrl(icon);
+  if (src) {
+    return <img src={src} alt="" width={size} height={size} className="app-icon-img" loading="lazy" />;
+  }
+  return (
+    <div className="app-icon" style={{ width: size, height: size }}>
+      <AppWindow size={18} />
+    </div>
+  );
+}
 function FormModal({
   title,
   onClose,
@@ -209,9 +235,15 @@ function Login({ onLogin }: { onLogin: () => void }) {
     </main>
   );
 }
-export default function Home() {
+function HomeDashboard() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const viewParam = searchParams.get('view') || 'overview';
+  const page = NAV_IDS.has(viewParam) ? viewParam : 'overview';
+  const setPage = (id: string) => {
+    router.push(id === 'overview' ? '/' : `/?view=${encodeURIComponent(id)}`, { scroll: false });
+  };
   const [authed, setAuthed] = useState<boolean | null>(null);
-  const [page, setPage] = useState("overview");
   const [summary, setSummary] = useState<Summary>({ status: "Checking" });
   const [apps, setApps] = useState<AppItem[]>([]);
   const [containers, setContainers] = useState<any[]>([]);
@@ -455,9 +487,7 @@ export default function Home() {
                         rel="noreferrer"
                         key={a.id}
                       >
-                        <div className="app-icon">
-                          <AppWindow />
-                        </div>
+                        <AppIconDisplay icon={a.icon} />
                         <div>
                           <b>{a.name}</b>
                           <small>{a.category || "Application"}</small>
@@ -749,13 +779,73 @@ function ActivityList({ items }: { items: any[] }) {
     </div>
   );
 }
-const emptyAppDraft = () => ({
+const emptyAppDraft = (): AppDraft => ({
   name: '',
   url: '',
   category: '',
   description: '',
   sortOrder: 0,
+  icon: '',
 });
+
+function AppFormFields({ draft, setDraft }: { draft: AppDraft; setDraft: (d: AppDraft) => void }) {
+  return (
+    <>
+      <div className="form-row">
+        <label>
+          Name
+          <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+        </label>
+        <label>
+          Category
+          <input
+            value={draft.category}
+            onChange={(e) => setDraft({ ...draft, category: e.target.value })}
+            placeholder="Media, DNS, …"
+          />
+        </label>
+      </div>
+      <label>
+        URL
+        <input required type="url" value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
+      </label>
+      <label>
+        Icon slug (selfh.st)
+        <input
+          value={draft.icon}
+          onChange={(e) => setDraft({ ...draft, icon: e.target.value })}
+          placeholder="traefik, jellyfin, portainer"
+        />
+        <span className="muted">
+          Lowercase name from{' '}
+          <a href="https://selfh.st/icons/" target="_blank" rel="noreferrer">
+            selfh.st/icons
+          </a>
+          , or paste a full image URL.
+        </span>
+      </label>
+      {draft.icon ? (
+        <div className="icon-preview">
+          <AppIconDisplay icon={draft.icon} size={40} />
+          <span className="muted">Preview</span>
+        </div>
+      ) : null}
+      <label>
+        Description (optional)
+        <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
+      </label>
+      <label>
+        Sort order
+        <input
+          type="number"
+          min={0}
+          value={draft.sortOrder}
+          onChange={(e) => setDraft({ ...draft, sortOrder: Number(e.target.value) })}
+        />
+      </label>
+    </>
+  );
+}
 
 function ApplicationsPanel({
   apps,
@@ -767,7 +857,28 @@ function ApplicationsPanel({
   onNotice: (s: string, tone?: NoticeTone) => void;
 }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [editApp, setEditApp] = useState<AppItem | null>(null);
   const [draft, setDraft] = useState(emptyAppDraft());
+  const openEdit = (a: AppItem) => {
+    setEditApp(a);
+    setDraft({
+      name: a.name,
+      url: a.url,
+      category: a.category || '',
+      description: a.description || '',
+      sortOrder: a.sortOrder ?? 0,
+      icon: a.icon || '',
+    });
+  };
+  const savePayload = (d: AppDraft) => ({
+    name: d.name.trim(),
+    url: d.url.trim(),
+    category: d.category.trim() || null,
+    description: d.description.trim() || null,
+    icon: d.icon.trim() || null,
+    sortOrder: Number(d.sortOrder) || 0,
+    enabled: true,
+  });
   return (
     <section className="panel">
       <div className="panel-head">
@@ -775,40 +886,53 @@ function ApplicationsPanel({
           <h2>Application launcher</h2>
           <p>Open and monitor registered services</p>
         </div>
-        <button type="button" className="btn primary" onClick={() => setShowAdd(true)}>
+        <button type="button" className="btn primary" onClick={() => { setDraft(emptyAppDraft()); setShowAdd(true); }}>
           Add application
         </button>
       </div>
       <div className="app-grid large">
         {apps.map((a) => (
-          <a className="app-card" href={a.url} target="_blank" rel="noreferrer" key={a.id}>
-            <div className="app-icon">
-              <AppWindow />
+          <div className="app-tile" key={a.id}>
+            <a className="app-card" href={a.url} target="_blank" rel="noreferrer">
+              <AppIconDisplay icon={a.icon} />
+              <div>
+                <b>{a.name}</b>
+                <small>{appSubtitle(a)}</small>
+              </div>
+              <ExternalLink size={14} className="external" />
+            </a>
+            <div className="app-tile-actions">
+              <button type="button" onClick={() => openEdit(a)}>
+                Edit
+              </button>
+              <button
+                type="button"
+                className="danger-text"
+                onClick={async () => {
+                  if (!confirm(`Remove ${a.name}?`)) return;
+                  try {
+                    await api(`/applications/${a.id}`, { method: 'DELETE' });
+                    onRefresh();
+                    onNotice('Application removed.', 'success');
+                  } catch (x) {
+                    onNotice((x as Error).message, 'error');
+                  }
+                }}
+              >
+                Delete
+              </button>
             </div>
-            <div>
-              <b>{a.name}</b>
-              <small>{appSubtitle(a)}</small>
-            </div>
-            <ExternalLink size={14} className="external" />
-          </a>
+          </div>
         ))}
         {!apps.length && <Empty text="No applications yet — use Add application." />}
       </div>
       {showAdd && (
         <FormModal title="Add application" onClose={() => setShowAdd(false)}>
-          <p className="muted">Shortcuts appear on Overview and here. Use full HTTPS URLs.</p>
           <form
             onSubmit={async (e) => {
               e.preventDefault();
               try {
-                await api('/applications', {
-                  method: 'POST',
-                  body: JSON.stringify({
-                    ...draft,
-                    sortOrder: Number(draft.sortOrder) || 0,
-                    enabled: true,
-                  }),
-                });
+                await api('/applications', { method: 'POST', body: JSON.stringify(savePayload(draft)) });
                 setDraft(emptyAppDraft());
                 setShowAdd(false);
                 onRefresh();
@@ -818,43 +942,43 @@ function ApplicationsPanel({
               }
             }}
           >
-            <div className="form-row">
-              <label>
-                Name
-                <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
-              </label>
-              <label>
-                Category
-                <input
-                  value={draft.category}
-                  onChange={(e) => setDraft({ ...draft, category: e.target.value })}
-                  placeholder="Media, DNS, …"
-                />
-              </label>
-            </div>
-            <label>
-              URL
-              <input required type="url" value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
-            </label>
-            <label>
-              Description (optional)
-              <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
-            </label>
-            <label>
-              Sort order
-              <input
-                type="number"
-                min={0}
-                value={draft.sortOrder}
-                onChange={(e) => setDraft({ ...draft, sortOrder: Number(e.target.value) })}
-              />
-            </label>
+            <AppFormFields draft={draft} setDraft={setDraft} />
             <div className="modal-actions">
               <button type="button" className="btn secondary" onClick={() => setShowAdd(false)}>
                 Cancel
               </button>
               <button type="submit" className="btn primary">
                 Save
+              </button>
+            </div>
+          </form>
+        </FormModal>
+      )}
+      {editApp && (
+        <FormModal title={`Edit ${editApp.name}`} onClose={() => setEditApp(null)}>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await api(`/applications/${editApp.id}`, {
+                  method: 'PUT',
+                  body: JSON.stringify(savePayload(draft)),
+                });
+                setEditApp(null);
+                onRefresh();
+                onNotice('Application updated.', 'success');
+              } catch (x) {
+                onNotice((x as Error).message, 'error');
+              }
+            }}
+          >
+            <AppFormFields draft={draft} setDraft={setDraft} />
+            <div className="modal-actions">
+              <button type="button" className="btn secondary" onClick={() => setEditApp(null)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn primary">
+                Save changes
               </button>
             </div>
           </form>
@@ -882,12 +1006,18 @@ function Maintenance({
   const [showSend, setShowSend] = useState(false);
   const [newRecipient, setNewRecipient] = useState({ name: '', email: '' });
   const [form, setForm] = useState(emptyMaintenanceForm());
+  const [mailLog, setMailLog] = useState<any[]>([]);
+  const loadMailLog = () =>
+    api('/notifications/history')
+      .then((d) => setMailLog((d.items || []).slice(0, 8)))
+      .catch(() => {});
   const loadRecipients = () =>
     api('/notifications/recipients')
       .then((d) => setRecipients(d.items || []))
       .catch(() => onNotice('Could not load recipients.', 'error'));
   useEffect(() => {
     void loadRecipients();
+    void loadMailLog();
   }, []);
   const toggleRecipient = (id: string) => {
     setForm((prev) => ({
@@ -909,7 +1039,7 @@ function Maintenance({
             Add recipient
           </button>
           <button type="button" className="btn primary" onClick={() => setShowSend(true)}>
-            <Mail size={16} /> Send email
+            <Mail size={16} /> Send mail now
           </button>
         </div>
       </div>
@@ -923,6 +1053,33 @@ function Maintenance({
             </li>
           ))}
         </ul>
+      )}
+      {!!mailLog.length && (
+        <section className="panel nested-panel">
+          <h3 className="subhead">Recent email deliveries</h3>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>To</th>
+                  <th>Subject</th>
+                  <th>Status</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mailLog.map((m) => (
+                  <tr key={m.id}>
+                    <td>{m.recipientEmail}</td>
+                    <td>{m.subject}</td>
+                    <td className={m.status === 'failed' ? 'cert-bad' : ''}>{m.status}</td>
+                    <td>{new Date(m.createdAt).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
       {showRecipient && (
         <FormModal title="Add recipient" onClose={() => setShowRecipient(false)}>
@@ -992,13 +1149,16 @@ function Maintenance({
                 recipientIds: form.recipientIds,
               };
               try {
-                await api('/notifications/send', {
+                const result = await api('/notifications/send', {
                   method: 'POST',
                   body: JSON.stringify(payload),
                 });
                 setForm(emptyMaintenanceForm());
                 setShowSend(false);
-                onNotice('Maintenance notification queued.', 'success');
+                const tone =
+                  result.failed > 0 ? ('warning' as NoticeTone) : ('success' as NoticeTone);
+                onNotice(result.message || 'Email sent.', tone);
+                void loadMailLog();
               } catch (x) {
                 onNotice((x as Error).message, 'error');
               }
@@ -1057,7 +1217,7 @@ function Maintenance({
                 Cancel
               </button>
               <button type="submit" className="btn primary">
-                Queue notification
+                <Mail size={16} /> Send now
               </button>
             </div>
           </form>
@@ -1114,12 +1274,22 @@ function Updates({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
   const [items, setItems] = useState<any[]>([]);
   const [hint, setHint] = useState('');
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [scannedAt, setScannedAt] = useState<string | null>(null);
+  const applyUpdatePayload = (d: any) => {
+    setItems(d.items || []);
+    setConfigured(d.configured !== false);
+    setScannedAt(d.scannedAt || null);
+    if (d.configured === false && d.message) setHint(d.message);
+  };
+  useEffect(() => {
+    api('/updates')
+      .then(applyUpdatePayload)
+      .catch(() => onNotice('Could not load updates.', 'error'));
+  }, []);
   const scan = async () => {
     try {
       const d = await api('/updates/scan', { method: 'POST' });
-      setItems(d.items || []);
-      setConfigured(d.configured !== false);
-      setHint(d.message || '');
+      applyUpdatePayload(d);
       onNotice(d.message || 'Update scan completed.', 'success');
     } catch (e) {
       onNotice((e as Error).message, 'error');
@@ -1131,7 +1301,8 @@ function Updates({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
         <div>
           <h2>Docker updates</h2>
           <p>
-            Pulled from What&apos;s Up Docker when <code>WUD_URL</code> is set in <code>.env</code>
+            Synced from What&apos;s Up Docker
+            {scannedAt ? ` · last scan ${new Date(scannedAt).toLocaleString()}` : ''}
           </p>
         </div>
         <button type="button" className="btn secondary" onClick={() => void scan()}>
@@ -1392,5 +1563,13 @@ function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) =
         </button>
       </form>
     </section>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="loading">Loading Homelab Central…</div>}>
+      <HomeDashboard />
+    </Suspense>
   );
 }

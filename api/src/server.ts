@@ -477,12 +477,19 @@ app.post("/notifications/send", auth, async (req: Authed, res) => {
     where: { id: { in: recipientIds }, active: true },
   });
   if (!recipients.length) return fail(res, "No active recipients selected");
+  if (!process.env.SMTP_HOST?.trim()) {
+    return fail(
+      res,
+      'SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_FROM (and SMTP_USER/SMTP_PASSWORD if required) in .env, then restart the API.',
+      503,
+    );
+  }
   const event = await db.maintenanceEvent.create({
     data: {
       title: titleText,
       description,
       subject: subjectText,
-      status: "queued",
+      status: 'sending',
       startAt: startAt ? new Date(startAt) : null,
       endAt: endAt ? new Date(endAt) : null,
     },
@@ -490,11 +497,23 @@ app.post("/notifications/send", auth, async (req: Authed, res) => {
   const transport = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === "true",
+    secure: process.env.SMTP_SECURE === 'true',
     auth: process.env.SMTP_USER
       ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD }
       : undefined,
   });
+  try {
+    await transport.verify();
+  } catch (e) {
+    await db.maintenanceEvent.update({
+      where: { id: event.id },
+      data: { status: 'failed' },
+    });
+    return fail(res, `SMTP connection failed: ${String(e)}`, 502);
+  }
+  let sent = 0;
+  let failed = 0;
+  const delivery: { email: string; status: string; error?: string }[] = [];
   for (const recipient of recipients) {
     try {
       const info = await transport.sendMail({
@@ -503,37 +522,64 @@ app.post("/notifications/send", auth, async (req: Authed, res) => {
         subject: subjectText,
         text: `${titleText}\n\n${description || ''}\n\nStart: ${startAt || 'TBD'}\nExpected end: ${endAt || 'TBD'}`,
       });
+      sent += 1;
+      delivery.push({ email: recipient.email, status: 'sent' });
       await db.emailLog.create({
         data: {
           maintenanceId: event.id,
           recipientId: recipient.id,
           recipientEmail: recipient.email,
-          subject,
-          status: "submitted",
+          subject: subjectText,
+          status: 'sent',
           providerMessageId: info.messageId,
         },
       });
     } catch (e) {
+      failed += 1;
+      const err = String(e);
+      delivery.push({ email: recipient.email, status: 'failed', error: err });
       await db.emailLog.create({
         data: {
           maintenanceId: event.id,
           recipientId: recipient.id,
           recipientEmail: recipient.email,
-          subject,
-          status: "failed",
-          error: String(e),
+          subject: subjectText,
+          status: 'failed',
+          error: err,
         },
       });
     }
   }
+  const finalStatus = failed === 0 ? 'sent' : sent === 0 ? 'failed' : 'partial';
+  await db.maintenanceEvent.update({
+    where: { id: event.id },
+    data: { status: finalStatus },
+  });
   await audit(
     req,
-    "maintenance.notification.sent",
-    "maintenance",
+    'maintenance.notification.sent',
+    'maintenance',
     event.id,
-    "success",
+    finalStatus,
+    { sent, failed },
   );
-  ok(res, { eventId: event.id }, 202);
+  if (sent === 0) {
+    return fail(res, `Email could not be sent to any recipient. Check SMTP and see Maintenance → history.`, 502);
+  }
+  ok(
+    res,
+  {
+      eventId: event.id,
+      sent,
+      failed,
+      delivery,
+      message:
+        failed === 0
+          ? `Sent to ${sent} recipient(s).`
+          : `Sent to ${sent}, failed for ${failed}. See notification history for details.`,
+    },
+    failed ? 207 : 200,
+  );
 });
 app.get("/backups", auth, async (_q, res) =>
   ok(res, {
@@ -554,6 +600,8 @@ app.post("/backups", auth, async (req: Authed, res) => {
   await audit(req, "backup.requested", "backup", b.id, "accepted");
   ok(res, { id: b.id, status: b.status }, 202);
 });
+const WUD_CACHE_KEY = 'wud_updates_cache';
+
 const wudRequest = async (path: string, init?: RequestInit) => {
   const base = process.env.WUD_URL?.replace(/\/$/, '');
   if (!base) return null;
@@ -573,24 +621,15 @@ const wudRequest = async (path: string, init?: RequestInit) => {
   });
 };
 
-app.post('/updates/scan', auth, async (_q, res) => {
-  if (!process.env.WUD_URL) {
-    return ok(res, {
-      configured: false,
-      items: [],
-      message:
-        "Set WUD_URL in .env to your What's Up Docker base URL (plus WUD_API_TOKEN or WUD_USER/WUD_PASSWORD).",
-    });
-  }
+const pullWudUpdates = async () => {
+  if (!process.env.WUD_URL) return { configured: false as const, items: [] as any[] };
   try {
     await wudRequest('/api/containers/watch', { method: 'POST' });
   } catch {
-    /* watch is optional; list may still be cached */
+    /* optional */
   }
   const listRes = await wudRequest('/api/containers');
-  if (!listRes?.ok) {
-    return fail(res, "Could not reach What's Up Docker — check WUD_URL and credentials.", 502);
-  }
+  if (!listRes?.ok) throw new Error("Could not reach What's Up Docker");
   const raw = await listRes.json();
   const containers = Array.isArray(raw) ? raw : [];
   const items = containers
@@ -604,13 +643,77 @@ app.post('/updates/scan', auth, async (_q, res) => {
       updateKind: c.updateKind?.semverDiff || c.updateKind?.kind || 'unknown',
       watcher: c.watcher,
     }));
-  ok(res, {
-    configured: true,
-    items,
-    message: items.length
-      ? `${items.length} update(s) reported by What's Up Docker`
-      : 'All watched images are up to date',
+  return { configured: true as const, items };
+};
+
+const saveWudCache = async (items: any[]) => {
+  const payload = { items, scannedAt: new Date().toISOString() };
+  await db.setting.upsert({
+    where: { key: WUD_CACHE_KEY },
+    update: { value: payload },
+    create: { key: WUD_CACHE_KEY, value: payload },
   });
+  return payload;
+};
+
+const loadWudCache = async () => {
+  const row = await db.setting.findUnique({ where: { key: WUD_CACHE_KEY } });
+  if (!row?.value || typeof row.value !== 'object') return null;
+  return row.value as { items: any[]; scannedAt: string };
+};
+
+app.get('/updates', auth, async (_q, res) => {
+  const cache = await loadWudCache();
+  const ageMs = cache?.scannedAt
+    ? Date.now() - new Date(cache.scannedAt).getTime()
+    : Number.POSITIVE_INFINITY;
+  const stale = ageMs > 15 * 60 * 1000;
+  if (process.env.WUD_URL && stale) {
+    try {
+      const { items } = await pullWudUpdates();
+      const fresh = await saveWudCache(items);
+      return ok(res, {
+        configured: true,
+        items,
+        scannedAt: fresh.scannedAt,
+        refreshed: true,
+      });
+    } catch {
+      /* use cache below */
+    }
+  }
+  ok(res, {
+    configured: !!process.env.WUD_URL,
+    items: cache?.items || [],
+    scannedAt: cache?.scannedAt || null,
+    refreshed: false,
+  });
+});
+
+app.post('/updates/scan', auth, async (_q, res) => {
+  try {
+    const { configured, items } = await pullWudUpdates();
+    if (!configured) {
+      return ok(res, {
+        configured: false,
+        items: [],
+        scannedAt: null,
+        message:
+          "Set WUD_URL in .env to your What's Up Docker base URL (plus WUD_API_TOKEN or WUD_USER/WUD_PASSWORD).",
+      });
+    }
+    const cache = await saveWudCache(items);
+    ok(res, {
+      configured: true,
+      items,
+      scannedAt: cache.scannedAt,
+      message: items.length
+        ? `${items.length} update(s) from What's Up Docker`
+        : 'All watched images are up to date',
+    });
+  } catch (e) {
+    return fail(res, String(e), 502);
+  }
 });
 app.get("/domains", auth, async (_q, res) =>
   ok(res, {
