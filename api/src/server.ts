@@ -371,22 +371,22 @@ app.get("/notifications/history", auth, async (_q, res) =>
 app.post("/notifications/send", auth, async (req: Authed, res) => {
   const { title, description, subject, recipientIds, startAt, endAt } =
     req.body || {};
-  if (
-    !title ||
-    !subject ||
-    !Array.isArray(recipientIds) ||
-    !recipientIds.length
-  )
-    return fail(res, "Title, subject and recipients are required");
+  const titleText = String(title || '').trim();
+  const subjectText = String(subject || '').trim();
+  if (!titleText) return fail(res, 'Maintenance title is required');
+  if (!subjectText) return fail(res, 'Email subject is required');
+  if (!Array.isArray(recipientIds) || !recipientIds.length) {
+    return fail(res, 'Select at least one recipient (add recipients below if the list is empty)');
+  }
   const recipients = await db.recipient.findMany({
     where: { id: { in: recipientIds }, active: true },
   });
   if (!recipients.length) return fail(res, "No active recipients selected");
   const event = await db.maintenanceEvent.create({
     data: {
-      title,
+      title: titleText,
       description,
-      subject,
+      subject: subjectText,
       status: "queued",
       startAt: startAt ? new Date(startAt) : null,
       endAt: endAt ? new Date(endAt) : null,
@@ -405,8 +405,8 @@ app.post("/notifications/send", auth, async (req: Authed, res) => {
       const info = await transport.sendMail({
         from: process.env.SMTP_FROM,
         to: recipient.email,
-        subject,
-        text: `${title}\n\n${description || ""}\n\nStart: ${startAt || "TBD"}\nExpected end: ${endAt || "TBD"}`,
+        subject: subjectText,
+        text: `${titleText}\n\n${description || ''}\n\nStart: ${startAt || 'TBD'}\nExpected end: ${endAt || 'TBD'}`,
       });
       await db.emailLog.create({
         data: {

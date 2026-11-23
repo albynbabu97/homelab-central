@@ -45,6 +45,7 @@ type AppItem = {
   healthStatus?: string;
   icon?: string;
 };
+type NoticeTone = 'success' | 'error' | 'warning';
 const nav = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "applications", label: "Applications", icon: AppWindow },
@@ -193,7 +194,12 @@ export default function Home() {
     resourceId?: string;
   } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState('');
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>('success');
+  const pushNotice = (text: string, tone: NoticeTone = 'success') => {
+    setNotice(text);
+    setNoticeTone(tone);
+  };
   const [mobile, setMobile] = useState(false);
   useEffect(() => {
     api("/auth/me")
@@ -232,11 +238,11 @@ export default function Home() {
           passcode: pin,
         }),
       });
-      setNotice("Operation accepted. Check activity logs for progress.");
+      pushNotice('Operation accepted. Check activity logs for progress.', 'success');
       setModal(null);
       refresh();
     } catch (e) {
-      setNotice((e as Error).message);
+      pushNotice((e as Error).message, 'error');
     } finally {
       setBusy(false);
     }
@@ -355,9 +361,13 @@ export default function Home() {
             )}
           </div>
           {notice && (
-            <div className="notice" onClick={() => setNotice("")}>
+            <div
+              className={`notice ${noticeTone}`}
+              onClick={() => setNotice('')}
+              role="status"
+            >
               {notice}
-              <button>
+              <button type="button" aria-label="Dismiss">
                 <X size={14} />
               </button>
             </div>
@@ -494,41 +504,8 @@ export default function Home() {
               </section>
             </>
           )}
-          {page === "applications" && (
-            <section className="panel">
-              <div className="panel-head">
-                <div>
-                  <h2>Application launcher</h2>
-                  <p>Open and monitor registered services</p>
-                </div>
-              </div>
-              <div className="app-grid large">
-                {apps.map((a) => (
-                  <a
-                    className="app-card"
-                    href={a.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    key={a.id}
-                  >
-                    <div className="app-icon">
-                      <AppWindow />
-                    </div>
-                    <div>
-                      <b>{a.name}</b>
-                      <small>
-                        {a.category || "Application"} ·{" "}
-                        {a.healthStatus || "Health unknown"}
-                      </small>
-                    </div>
-                    <ExternalLink size={14} className="external" />
-                  </a>
-                ))}
-                {!apps.length && (
-                  <Empty text="Add application links through the Applications API. UI management is planned in the next iteration." />
-                )}
-              </div>
-            </section>
+          {page === 'applications' && (
+            <ApplicationsPanel apps={apps} onRefresh={refresh} onNotice={pushNotice} />
           )}
           {page === "docker" && (
             <section className="panel">
@@ -636,10 +613,10 @@ export default function Home() {
               </p>
             </section>
           )}
-          {page === "maintenance" && <Maintenance onNotice={setNotice} />}
-          {page === "backups" && <Backups onNotice={setNotice} />}
-          {page === "updates" && <Updates onNotice={setNotice} />}
-          {page === "domains" && <Domains />}
+          {page === 'maintenance' && <Maintenance onNotice={pushNotice} />}
+          {page === 'backups' && <Backups onNotice={pushNotice} />}
+          {page === 'updates' && <Updates onNotice={pushNotice} />}
+          {page === 'domains' && <Domains onNotice={pushNotice} />}
           {page === "activity" && (
             <section className="panel">
               <div className="panel-head">
@@ -651,7 +628,7 @@ export default function Home() {
               <ActivityList items={activities} />
             </section>
           )}
-          {page === "settings" && <SettingsPage onNotice={setNotice} />}
+          {page === 'settings' && <SettingsPage onNotice={pushNotice} />}
         </div>
       </main>
       {modal && (
@@ -744,109 +721,288 @@ function ActivityList({ items }: { items: any[] }) {
     </div>
   );
 }
-function Maintenance({ onNotice }: { onNotice: (s: string) => void }) {
-  const [recipients, setRecipients] = useState<any[]>([]);
-  const [form, setForm] = useState({
-    title: "Scheduled server maintenance",
-    description: "",
-    startAt: "",
-    endAt: "",
-    subject: "Scheduled maintenance – Homelab services",
-    recipientIds: [] as string[],
+function ApplicationsPanel({
+  apps,
+  onRefresh,
+  onNotice,
+}: {
+  apps: AppItem[];
+  onRefresh: () => void;
+  onNotice: (s: string, tone?: NoticeTone) => void;
+}) {
+  const [draft, setDraft] = useState({
+    name: '',
+    url: '',
+    category: '',
+    description: '',
+    sortOrder: 0,
   });
-  useEffect(() => {
-    api("/notifications/recipients")
-      .then((d) => setRecipients(d.items || []))
-      .catch(() => {});
-  }, []);
   return (
-    <section className="panel form-panel">
-      <h2>Send maintenance notification</h2>
-      <p>Compose and send an announcement to configured recipients.</p>
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          try {
-            await api("/notifications/send", {
-              method: "POST",
-              body: JSON.stringify(form),
-            });
-            onNotice("Maintenance notification queued.");
-          } catch (x) {
-            onNotice((x as Error).message);
-          }
-        }}
-      >
-        <label>
-          Subject
-          <input
-            required
-            value={form.subject}
-            onChange={(e) => setForm({ ...form, subject: e.target.value })}
-          />
-        </label>
-        <label>
-          Maintenance title
-          <input
-            required
-            value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
-          />
-        </label>
-        <label>
-          Description
-          <textarea
-            rows={4}
-            value={form.description}
-            onChange={(e) => setForm({ ...form, description: e.target.value })}
-          />
-        </label>
-        <div className="form-row">
-          <label>
-            Start time
-            <input
-              type="datetime-local"
-              value={form.startAt}
-              onChange={(e) => setForm({ ...form, startAt: e.target.value })}
-            />
-          </label>
-          <label>
-            Expected end
-            <input
-              type="datetime-local"
-              value={form.endAt}
-              onChange={(e) => setForm({ ...form, endAt: e.target.value })}
-            />
-          </label>
-        </div>
-        <label>
-          Recipients
-          <select
-            multiple
-            value={form.recipientIds}
-            onChange={(e) =>
-              setForm({
-                ...form,
-                recipientIds: Array.from(
-                  e.target.selectedOptions,
-                  (o) => o.value,
-                ),
-              })
+    <>
+      <section className="panel form-panel">
+        <h2>Add application</h2>
+        <p className="muted">Shortcuts appear on Overview and here. Use full URLs (e.g. https://immich.example.com).</p>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              await api('/applications', {
+                method: 'POST',
+                body: JSON.stringify({
+                  ...draft,
+                  sortOrder: Number(draft.sortOrder) || 0,
+                  enabled: true,
+                }),
+              });
+              setDraft({ name: '', url: '', category: '', description: '', sortOrder: 0 });
+              onRefresh();
+              onNotice('Application added.', 'success');
+            } catch (x) {
+              onNotice((x as Error).message, 'error');
             }
-          >
-            {recipients.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name} — {r.email}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button className="btn primary">Queue notification</button>
-      </form>
-    </section>
+          }}
+        >
+          <div className="form-row">
+            <label>
+              Name
+              <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+            </label>
+            <label>
+              Category
+              <input value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })} placeholder="Media, DNS, …" />
+            </label>
+          </div>
+          <label>
+            URL
+            <input required type="url" value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
+          </label>
+          <label>
+            Description (optional)
+            <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
+          </label>
+          <label>
+            Sort order
+            <input
+              type="number"
+              min={0}
+              value={draft.sortOrder}
+              onChange={(e) => setDraft({ ...draft, sortOrder: Number(e.target.value) })}
+            />
+          </label>
+          <button type="submit" className="btn primary">
+            Save application
+          </button>
+        </form>
+      </section>
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>Application launcher</h2>
+            <p>Open and monitor registered services</p>
+          </div>
+        </div>
+        <div className="app-grid large">
+          {apps.map((a) => (
+            <a className="app-card" href={a.url} target="_blank" rel="noreferrer" key={a.id}>
+              <div className="app-icon">
+                <AppWindow />
+              </div>
+              <div>
+                <b>{a.name}</b>
+                <small>
+                  {a.category || 'Application'} · {a.healthStatus || 'Health unknown'}
+                </small>
+              </div>
+              <ExternalLink size={14} className="external" />
+            </a>
+          ))}
+          {!apps.length && <Empty text="No applications yet — add one above." />}
+        </div>
+      </section>
+    </>
   );
 }
-function Backups({ onNotice }: { onNotice: (s: string) => void }) {
+function Maintenance({
+  onNotice,
+}: {
+  onNotice: (s: string, tone?: NoticeTone) => void;
+}) {
+  const [recipients, setRecipients] = useState<any[]>([]);
+  const [newRecipient, setNewRecipient] = useState({ name: '', email: '' });
+  const [form, setForm] = useState({
+    title: 'Scheduled server maintenance',
+    description: '',
+    startAt: '',
+    endAt: '',
+    subject: 'Scheduled maintenance – Homelab services',
+    recipientIds: [] as string[],
+  });
+  const loadRecipients = () =>
+    api('/notifications/recipients')
+      .then((d) => setRecipients(d.items || []))
+      .catch(() => onNotice('Could not load recipients.', 'error'));
+  useEffect(() => {
+    void loadRecipients();
+  }, []);
+  const toggleRecipient = (id: string) => {
+    setForm((prev) => ({
+      ...prev,
+      recipientIds: prev.recipientIds.includes(id)
+        ? prev.recipientIds.filter((x) => x !== id)
+        : [...prev.recipientIds, id],
+    }));
+  };
+  return (
+    <>
+      <section className="panel form-panel">
+        <h2>Notification recipients</h2>
+        <p className="muted">Add who should receive maintenance emails. Select them when sending below.</p>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              await api('/notifications/recipients', {
+                method: 'POST',
+                body: JSON.stringify(newRecipient),
+              });
+              setNewRecipient({ name: '', email: '' });
+              await loadRecipients();
+              onNotice('Recipient added.', 'success');
+            } catch (x) {
+              onNotice((x as Error).message, 'error');
+            }
+          }}
+        >
+          <div className="form-row">
+            <label>
+              Name
+              <input
+                required
+                value={newRecipient.name}
+                onChange={(e) => setNewRecipient({ ...newRecipient, name: e.target.value })}
+              />
+            </label>
+            <label>
+              Email
+              <input
+                type="email"
+                required
+                value={newRecipient.email}
+                onChange={(e) => setNewRecipient({ ...newRecipient, email: e.target.value })}
+              />
+            </label>
+          </div>
+          <button type="submit" className="btn secondary">
+            Add recipient
+          </button>
+        </form>
+        {!recipients.length && (
+          <p className="muted">No recipients yet — add at least one before sending.</p>
+        )}
+        {!!recipients.length && (
+          <ul className="recipient-list">
+            {recipients.map((r) => (
+              <li key={r.id}>
+                <b>{r.name}</b> — {r.email}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section className="panel form-panel">
+        <h2>Send maintenance notification</h2>
+        <p>Compose and queue an email via SMTP (configure SMTP in <code>.env</code>).</p>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!form.recipientIds.length) {
+              onNotice('Select at least one recipient.', 'warning');
+              return;
+            }
+            const payload = {
+              title: form.title.trim(),
+              subject: form.subject.trim(),
+              description: form.description,
+              startAt: form.startAt || null,
+              endAt: form.endAt || null,
+              recipientIds: form.recipientIds,
+            };
+            try {
+              await api('/notifications/send', {
+                method: 'POST',
+                body: JSON.stringify(payload),
+              });
+              onNotice('Maintenance notification queued.', 'success');
+            } catch (x) {
+              onNotice((x as Error).message, 'error');
+            }
+          }}
+        >
+          <label>
+            Subject
+            <input
+              required
+              value={form.subject}
+              onChange={(e) => setForm({ ...form, subject: e.target.value })}
+            />
+          </label>
+          <label>
+            Maintenance title
+            <input
+              required
+              value={form.title}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
+            />
+          </label>
+          <label>
+            Description
+            <textarea
+              rows={4}
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+            />
+          </label>
+          <div className="form-row">
+            <label>
+              Start time
+              <input
+                type="datetime-local"
+                value={form.startAt}
+                onChange={(e) => setForm({ ...form, startAt: e.target.value })}
+              />
+            </label>
+            <label>
+              Expected end
+              <input
+                type="datetime-local"
+                value={form.endAt}
+                onChange={(e) => setForm({ ...form, endAt: e.target.value })}
+              />
+            </label>
+          </div>
+          <fieldset className="recipient-pick">
+            <legend>Recipients</legend>
+            {recipients.map((r) => (
+              <label key={r.id} className="check-row">
+                <input
+                  type="checkbox"
+                  checked={form.recipientIds.includes(r.id)}
+                  onChange={() => toggleRecipient(r.id)}
+                />
+                {r.name} — {r.email}
+              </label>
+            ))}
+            {!recipients.length && <p className="muted">Add recipients in the section above first.</p>}
+          </fieldset>
+          <button type="submit" className="btn primary">
+            Queue notification
+          </button>
+        </form>
+      </section>
+    </>
+  );
+}
+function Backups({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
   const [items, setItems] = useState<any[]>([]);
   const load = () =>
     api("/backups")
@@ -870,10 +1026,10 @@ function Backups({ onNotice }: { onNotice: (s: string) => void }) {
                 method: "POST",
                 body: JSON.stringify({ type: "config" }),
               });
-              onNotice("Backup job queued.");
+              onNotice('Backup job queued.', 'success');
               load();
             } catch (e) {
-              onNotice((e as Error).message);
+              onNotice((e as Error).message, 'error');
             }
           }}
         >
@@ -890,7 +1046,7 @@ function Backups({ onNotice }: { onNotice: (s: string) => void }) {
     </section>
   );
 }
-function Updates({ onNotice }: { onNotice: (s: string) => void }) {
+function Updates({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
   const [items, setItems] = useState<any[]>([]);
   return (
     <section className="panel">
@@ -905,9 +1061,9 @@ function Updates({ onNotice }: { onNotice: (s: string) => void }) {
             try {
               const d = await api("/updates/scan", { method: "POST" });
               setItems(d.items || []);
-              onNotice("Update scan completed.");
+              onNotice('Update scan completed.', 'success');
             } catch (e) {
-              onNotice((e as Error).message);
+              onNotice((e as Error).message, 'error');
             }
           }}
         >
@@ -922,58 +1078,109 @@ function Updates({ onNotice }: { onNotice: (s: string) => void }) {
     </section>
   );
 }
-function Domains() {
+function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
   const [items, setItems] = useState<any[]>([]);
-  useEffect(() => {
-    api("/domains")
+  const [draft, setDraft] = useState({ hostname: '', checkUrl: '' });
+  const load = () =>
+    api('/domains')
       .then((d) => setItems(d.items || []))
-      .catch(() => {});
+      .catch(() => onNotice('Could not load domains.', 'error'));
+  useEffect(() => {
+    void load();
   }, []);
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <div>
-          <h2>Domains & SSL</h2>
-          <p>Availability and certificate monitoring</p>
+    <>
+      <section className="panel form-panel">
+        <h2>Add domain to monitor</h2>
+        <p className="muted">
+          Hostnames are stored for tracking. Automated HTTPS checks and expiry alerts are planned; add domains here to prepare your inventory.
+        </p>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              await api('/domains', {
+                method: 'POST',
+                body: JSON.stringify({
+                  hostname: draft.hostname.trim(),
+                  checkUrl: draft.checkUrl.trim() || `https://${draft.hostname.trim()}`,
+                  enabled: true,
+                }),
+              });
+              setDraft({ hostname: '', checkUrl: '' });
+              await load();
+              onNotice('Domain added.', 'success');
+            } catch (x) {
+              onNotice((x as Error).message, 'error');
+            }
+          }}
+        >
+          <label>
+            Hostname
+            <input
+              required
+              placeholder="central.albyn.site"
+              value={draft.hostname}
+              onChange={(e) => setDraft({ ...draft, hostname: e.target.value })}
+            />
+          </label>
+          <label>
+            Check URL (optional)
+            <input
+              type="url"
+              placeholder="https://central.albyn.site"
+              value={draft.checkUrl}
+              onChange={(e) => setDraft({ ...draft, checkUrl: e.target.value })}
+            />
+          </label>
+          <button type="submit" className="btn primary">
+            Add domain
+          </button>
+        </form>
+      </section>
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>Domains & SSL</h2>
+            <p>Availability and certificate monitoring</p>
+          </div>
         </div>
-      </div>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Hostname</th>
-              <th>HTTP</th>
-              <th>Certificate expiry</th>
-              <th>Last checked</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((d) => (
-              <tr key={d.id}>
-                <td>{d.hostname}</td>
-                <td>{d.lastCheck?.httpStatus || "—"}</td>
-                <td>
-                  {d.lastCheck?.certificateExpiry
-                    ? new Date(
-                        d.lastCheck.certificateExpiry,
-                      ).toLocaleDateString()
-                    : "—"}
-                </td>
-                <td>
-                  {d.lastCheck?.checkedAt
-                    ? new Date(d.lastCheck.checkedAt).toLocaleString()
-                    : "Never"}
-                </td>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Hostname</th>
+                <th>HTTP</th>
+                <th>Certificate expiry</th>
+                <th>Last checked</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {!items.length && <Empty text="No monitored domains configured." />}
-      </div>
-    </section>
+            </thead>
+            <tbody>
+              {items.map((d) => (
+                <tr key={d.id}>
+                  <td>{d.hostname}</td>
+                  <td>{d.lastCheck?.httpStatus ?? '—'}</td>
+                  <td>
+                    {d.lastCheck?.certExpiry
+                      ? new Date(d.lastCheck.certExpiry).toLocaleDateString()
+                      : '—'}
+                  </td>
+                  <td>
+                    {d.lastCheck?.checkedAt
+                      ? new Date(d.lastCheck.checkedAt).toLocaleString()
+                      : 'Never'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!items.length && <Empty text="No monitored domains yet — add one above." />}
+        </div>
+      </section>
+    </>
   );
 }
-function SettingsPage({ onNotice }: { onNotice: (s: string) => void }) {
+function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
   const [pin, setPin] = useState("");
   const [oldPin, setOldPin] = useState("");
   return (
@@ -992,9 +1199,9 @@ function SettingsPage({ onNotice }: { onNotice: (s: string) => void }) {
             });
             setPin("");
             setOldPin("");
-            onNotice("Security passcode updated.");
+            onNotice('Security passcode updated.', 'success');
           } catch (x) {
-            onNotice((x as Error).message);
+            onNotice((x as Error).message, 'error');
           }
         }}
       >
