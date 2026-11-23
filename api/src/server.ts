@@ -96,6 +96,9 @@ const fail = (res: Response, msg: string, status = 400) =>
   res.status(status).json({ success: false, error: msg });
 // Express may type :id params as string | string[]; Prisma and audit expect a single string.
 const routeParam = (v: string | string[]) => (Array.isArray(v) ? v[0] : v);
+// TLS peer certificate DN fields may be string | string[] in Node types.
+const dnValue = (v: string | string[] | undefined) =>
+  (Array.isArray(v) ? v[0] : v) || undefined;
 
 const getTlsCertMeta = (host: string, port: number) =>
   new Promise<{ validTo: Date; issuer: string }>((resolve, reject) => {
@@ -107,7 +110,10 @@ const getTlsCertMeta = (host: string, port: number) =>
         if (!cert?.valid_to) return reject(new Error('No certificate returned'));
         resolve({
           validTo: new Date(cert.valid_to),
-          issuer: cert.issuer?.O || cert.issuer?.CN || 'unknown',
+          issuer:
+            dnValue(cert.issuer?.O) ||
+            dnValue(cert.issuer?.CN) ||
+            'unknown',
         });
       },
     );
