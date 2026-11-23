@@ -32,14 +32,15 @@ app.use(
 app.use(
   session({
     store: new RedisStore({ client: redisClient }),
-    name: "hc.sid",
-    secret: process.env.SESSION_SECRET || "development-only-change-me",
+    name: 'hc.sid',
+    secret: process.env.SESSION_SECRET || 'development-only-change-me',
     resave: false,
     saveUninitialized: false,
+    proxy: true,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
       maxAge: 8 * 60 * 60 * 1000,
     },
   }),
@@ -118,12 +119,15 @@ app.post("/auth/login", async (req, res) => {
   if (!user || !(await argon2.verify(user.passwordHash, String(password))))
     return fail(res, "Invalid credentials", 401);
   (req.session as any).userId = user.id;
+  await new Promise<void>((resolve, reject) =>
+    req.session.save((err) => (err ? reject(err) : resolve())),
+  );
   await audit(
     { ...req, userId: user.id } as Authed,
-    "auth.login",
-    "user",
+    'auth.login',
+    'user',
     user.id,
-    "success",
+    'success',
   );
   ok(res, { id: user.id, email: user.email });
 });

@@ -131,10 +131,11 @@ function Login({ onLogin }: { onLogin: () => void }) {
           setBusy(true);
           setError("");
           try {
-            await api("/auth/login", {
-              method: "POST",
+            await api('/auth/login', {
+              method: 'POST',
               body: JSON.stringify({ email, password }),
             });
+            await api('/auth/me');
             onLogin();
           } catch (x) {
             setError((x as Error).message);

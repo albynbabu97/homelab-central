@@ -8,6 +8,8 @@ services:
       NODE_ENV: production
       INTERNAL_API_URL: http://api:4000
       NEXT_PUBLIC_APP_NAME: Homelab Central
+      # API session cookies use secure:true; internal hop is HTTP — tell API the browser used HTTPS
+      TRUST_FORWARDED_PROTO: https
     depends_on: [api]
     networks: [app, traefik]
     labels:
