@@ -1,4 +1,36 @@
-import {NextRequest,NextResponse} from "next/server";
-const base=process.env.INTERNAL_API_URL||"http://localhost:4000";
-async function proxy(req:NextRequest,{params}:{params:Promise<{path:string[]}>}){const {path}=await params;const url=`${base}/${path.join("/")}${req.nextUrl.search}`;const headers=new Headers();for(const k of ["content-type","cookie","authorization"]) {const v=req.headers.get(k);if(v)headers.set(k,v)};const body=["GET","HEAD"].includes(req.method)?undefined:await req.arrayBuffer();const upstream=await fetch(url,{method:req.method,headers,body,redirect:"manual",cache:"no-store"});const out=new NextResponse(upstream.body,{status:upstream.status});for(const [k,v] of upstream.headers)if(["content-type","set-cookie","cache-control"].includes(k.toLowerCase()))out.headers.set(k,v);return out}
-export const GET=proxy,POST=proxy,PUT=proxy,PATCH=proxy,DELETE=proxy;
+import { NextRequest, NextResponse } from "next/server";
+const base = process.env.INTERNAL_API_URL || "http://localhost:4000";
+async function proxy(
+  req: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> },
+) {
+  const { path } = await params;
+  const url = `${base}/${path.join("/")}${req.nextUrl.search}`;
+  const headers = new Headers();
+  for (const k of ["content-type", "cookie", "authorization"]) {
+    const v = req.headers.get(k);
+    if (v) headers.set(k, v);
+  }
+  const body = ["GET", "HEAD"].includes(req.method)
+    ? undefined
+    : await req.arrayBuffer();
+  const upstream = await fetch(url, {
+    method: req.method,
+    headers,
+    body,
+    redirect: "manual",
+    cache: "no-store",
+  });
+  const out = new NextResponse(upstream.body, { status: upstream.status });
+  for (const [k, v] of upstream.headers)
+    if (
+      ["content-type", "set-cookie", "cache-control"].includes(k.toLowerCase())
+    )
+      out.headers.set(k, v);
+  return out;
+}
+export const GET = proxy,
+  POST = proxy,
+  PUT = proxy,
+  PATCH = proxy,
+  DELETE = proxy;

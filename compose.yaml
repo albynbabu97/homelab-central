@@ -46,7 +46,8 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
-    networks: [app, ops]
+    # host_access is non-internal so host.docker.internal can reach the native host helper on :4200
+    networks: [app, ops, host_access]
     volumes:
       - /opt/homelab/data/homelab-central/backups:/backups
   worker:
@@ -106,6 +107,7 @@ services:
 networks:
   app: { internal: true }
   ops: { internal: true }
+  host_access: {}
   traefik:
     external: true
     name: ${TRAEFIK_NETWORK}

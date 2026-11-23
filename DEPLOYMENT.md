@@ -62,6 +62,18 @@ sudo systemctl status homelab-host-helper
 curl -fsS -H "Authorization: Bearer YOUR_HOST_HELPER_TOKEN" http://127.0.0.1:4200/health
 ```
 
+The helper must listen on `0.0.0.0:4200` (not only `127.0.0.1`) so containers can reach it via `host.docker.internal`. Restrict port 4200 with the host firewall.
+
+From the API container (after the stack is up):
+
+```bash
+docker compose exec api wget -qO- \
+  --header="Authorization: Bearer $(grep '^HOST_HELPER_TOKEN=' .env | cut -d= -f2-)" \
+  http://host.docker.internal:4200/health
+```
+
+If you see `Network unreachable`, the API service must also be attached to the non-internal `host_access` network in `compose.yaml` ( `app` / `ops` are `internal: true` and cannot reach the Docker host by design).
+
 The helper is not installed automatically by Compose. Do not enable reboot/shutdown controls until this is tested.
 
 ## 5. Cloudflare and Traefik

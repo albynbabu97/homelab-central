@@ -8,12 +8,14 @@ User=homelab-helper
 Group=homelab-helper
 WorkingDirectory=/opt/homelab/stacks/homelab-central/host-helper
 EnvironmentFile=/etc/homelab-central/host-helper.env
-ExecStart=/usr/bin/python3 -m uvicorn agent:app --host 0.0.0.0 --port 4200
+ExecStart=/opt/homelab/stacks/homelab-central/host-helper/.venv/bin/python -m uvicorn agent:app --host 0.0.0.0 --port 4200
 Restart=on-failure
+RestartSec=3
+# strict sandbox blocks the venv/site-packages path on some setups; full is still locked down enough for homelab
 PrivateTmp=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/run
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
