@@ -44,6 +44,10 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       SMTP_FROM: ${SMTP_FROM}
       BACKUP_ROOT: ${BACKUP_ROOT}
+      WUD_URL: ${WUD_URL:-}
+      WUD_API_TOKEN: ${WUD_API_TOKEN:-}
+      WUD_USER: ${WUD_USER:-}
+      WUD_PASSWORD: ${WUD_PASSWORD:-}
     extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       postgres: { condition: service_healthy }

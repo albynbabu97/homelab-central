@@ -554,12 +554,64 @@ app.post("/backups", auth, async (req: Authed, res) => {
   await audit(req, "backup.requested", "backup", b.id, "accepted");
   ok(res, { id: b.id, status: b.status }, 202);
 });
-app.post("/updates/scan", auth, async (_q, res) =>
+const wudRequest = async (path: string, init?: RequestInit) => {
+  const base = process.env.WUD_URL?.replace(/\/$/, '');
+  if (!base) return null;
+  const headers = new Headers(init?.headers);
+  if (process.env.WUD_API_TOKEN) {
+    headers.set('Authorization', `Bearer ${process.env.WUD_API_TOKEN}`);
+  } else if (process.env.WUD_USER && process.env.WUD_PASSWORD) {
+    headers.set(
+      'Authorization',
+      `Basic ${Buffer.from(`${process.env.WUD_USER}:${process.env.WUD_PASSWORD}`).toString('base64')}`,
+    );
+  }
+  return fetch(`${base}${path}`, {
+    ...init,
+    headers,
+    signal: AbortSignal.timeout(25_000),
+  });
+};
+
+app.post('/updates/scan', auth, async (_q, res) => {
+  if (!process.env.WUD_URL) {
+    return ok(res, {
+      configured: false,
+      items: [],
+      message:
+        "Set WUD_URL in .env to your What's Up Docker base URL (plus WUD_API_TOKEN or WUD_USER/WUD_PASSWORD).",
+    });
+  }
+  try {
+    await wudRequest('/api/containers/watch', { method: 'POST' });
+  } catch {
+    /* watch is optional; list may still be cached */
+  }
+  const listRes = await wudRequest('/api/containers');
+  if (!listRes?.ok) {
+    return fail(res, "Could not reach What's Up Docker — check WUD_URL and credentials.", 502);
+  }
+  const raw = await listRes.json();
+  const containers = Array.isArray(raw) ? raw : [];
+  const items = containers
+    .filter((c: { updateAvailable?: boolean }) => c.updateAvailable)
+    .map((c: any) => ({
+      id: c.id,
+      name: c.name,
+      image: c.image?.name,
+      currentTag: c.image?.tag?.value,
+      availableTag: c.result?.tag,
+      updateKind: c.updateKind?.semverDiff || c.updateKind?.kind || 'unknown',
+      watcher: c.watcher,
+    }));
   ok(res, {
-    items: [],
-    message: "Image update scanning adapter is not configured yet.",
-  }),
-);
+    configured: true,
+    items,
+    message: items.length
+      ? `${items.length} update(s) reported by What's Up Docker`
+      : 'All watched images are up to date',
+  });
+});
 app.get("/domains", auth, async (_q, res) =>
   ok(res, {
     items: await db.domain

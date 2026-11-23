@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   Activity,
   AppWindow,
@@ -68,6 +68,34 @@ const api = async (path: string, init: RequestInit = {}) => {
   if (!r.ok) throw new Error(j.error || `Request failed (${r.status})`);
   return j.data ?? j;
 };
+const appSubtitle = (a: AppItem) => {
+  const category = a.category || 'Application';
+  if (!a.healthStatus || a.healthStatus === 'unknown') return category;
+  return `${category} · ${a.healthStatus}`;
+};
+function FormModal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal modal-form" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-form-head">
+          <h2>{title}</h2>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
 function PinModal({
   title,
   onCancel,
@@ -721,6 +749,14 @@ function ActivityList({ items }: { items: any[] }) {
     </div>
   );
 }
+const emptyAppDraft = () => ({
+  name: '',
+  url: '',
+  category: '',
+  description: '',
+  sortOrder: 0,
+});
+
 function ApplicationsPanel({
   apps,
   onRefresh,
@@ -730,113 +766,122 @@ function ApplicationsPanel({
   onRefresh: () => void;
   onNotice: (s: string, tone?: NoticeTone) => void;
 }) {
-  const [draft, setDraft] = useState({
-    name: '',
-    url: '',
-    category: '',
-    description: '',
-    sortOrder: 0,
-  });
+  const [showAdd, setShowAdd] = useState(false);
+  const [draft, setDraft] = useState(emptyAppDraft());
   return (
-    <>
-      <section className="panel form-panel">
-        <h2>Add application</h2>
-        <p className="muted">Shortcuts appear on Overview and here. Use full URLs (e.g. https://immich.example.com).</p>
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            try {
-              await api('/applications', {
-                method: 'POST',
-                body: JSON.stringify({
-                  ...draft,
-                  sortOrder: Number(draft.sortOrder) || 0,
-                  enabled: true,
-                }),
-              });
-              setDraft({ name: '', url: '', category: '', description: '', sortOrder: 0 });
-              onRefresh();
-              onNotice('Application added.', 'success');
-            } catch (x) {
-              onNotice((x as Error).message, 'error');
-            }
-          }}
-        >
-          <div className="form-row">
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Application launcher</h2>
+          <p>Open and monitor registered services</p>
+        </div>
+        <button type="button" className="btn primary" onClick={() => setShowAdd(true)}>
+          Add application
+        </button>
+      </div>
+      <div className="app-grid large">
+        {apps.map((a) => (
+          <a className="app-card" href={a.url} target="_blank" rel="noreferrer" key={a.id}>
+            <div className="app-icon">
+              <AppWindow />
+            </div>
+            <div>
+              <b>{a.name}</b>
+              <small>{appSubtitle(a)}</small>
+            </div>
+            <ExternalLink size={14} className="external" />
+          </a>
+        ))}
+        {!apps.length && <Empty text="No applications yet — use Add application." />}
+      </div>
+      {showAdd && (
+        <FormModal title="Add application" onClose={() => setShowAdd(false)}>
+          <p className="muted">Shortcuts appear on Overview and here. Use full HTTPS URLs.</p>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await api('/applications', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    ...draft,
+                    sortOrder: Number(draft.sortOrder) || 0,
+                    enabled: true,
+                  }),
+                });
+                setDraft(emptyAppDraft());
+                setShowAdd(false);
+                onRefresh();
+                onNotice('Application added.', 'success');
+              } catch (x) {
+                onNotice((x as Error).message, 'error');
+              }
+            }}
+          >
+            <div className="form-row">
+              <label>
+                Name
+                <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+              </label>
+              <label>
+                Category
+                <input
+                  value={draft.category}
+                  onChange={(e) => setDraft({ ...draft, category: e.target.value })}
+                  placeholder="Media, DNS, …"
+                />
+              </label>
+            </div>
             <label>
-              Name
-              <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+              URL
+              <input required type="url" value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
             </label>
             <label>
-              Category
-              <input value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })} placeholder="Media, DNS, …" />
+              Description (optional)
+              <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
             </label>
-          </div>
-          <label>
-            URL
-            <input required type="url" value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
-          </label>
-          <label>
-            Description (optional)
-            <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
-          </label>
-          <label>
-            Sort order
-            <input
-              type="number"
-              min={0}
-              value={draft.sortOrder}
-              onChange={(e) => setDraft({ ...draft, sortOrder: Number(e.target.value) })}
-            />
-          </label>
-          <button type="submit" className="btn primary">
-            Save application
-          </button>
-        </form>
-      </section>
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>Application launcher</h2>
-            <p>Open and monitor registered services</p>
-          </div>
-        </div>
-        <div className="app-grid large">
-          {apps.map((a) => (
-            <a className="app-card" href={a.url} target="_blank" rel="noreferrer" key={a.id}>
-              <div className="app-icon">
-                <AppWindow />
-              </div>
-              <div>
-                <b>{a.name}</b>
-                <small>
-                  {a.category || 'Application'} · {a.healthStatus || 'Health unknown'}
-                </small>
-              </div>
-              <ExternalLink size={14} className="external" />
-            </a>
-          ))}
-          {!apps.length && <Empty text="No applications yet — add one above." />}
-        </div>
-      </section>
-    </>
+            <label>
+              Sort order
+              <input
+                type="number"
+                min={0}
+                value={draft.sortOrder}
+                onChange={(e) => setDraft({ ...draft, sortOrder: Number(e.target.value) })}
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="btn secondary" onClick={() => setShowAdd(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn primary">
+                Save
+              </button>
+            </div>
+          </form>
+        </FormModal>
+      )}
+    </section>
   );
 }
+const emptyMaintenanceForm = () => ({
+  title: 'Scheduled server maintenance',
+  description: '',
+  startAt: '',
+  endAt: '',
+  subject: 'Scheduled maintenance – Homelab services',
+  recipientIds: [] as string[],
+});
+
 function Maintenance({
   onNotice,
 }: {
   onNotice: (s: string, tone?: NoticeTone) => void;
 }) {
   const [recipients, setRecipients] = useState<any[]>([]);
+  const [showRecipient, setShowRecipient] = useState(false);
+  const [showSend, setShowSend] = useState(false);
   const [newRecipient, setNewRecipient] = useState({ name: '', email: '' });
-  const [form, setForm] = useState({
-    title: 'Scheduled server maintenance',
-    description: '',
-    startAt: '',
-    endAt: '',
-    subject: 'Scheduled maintenance – Homelab services',
-    recipientIds: [] as string[],
-  });
+  const [form, setForm] = useState(emptyMaintenanceForm());
   const loadRecipients = () =>
     api('/notifications/recipients')
       .then((d) => setRecipients(d.items || []))
@@ -853,153 +898,172 @@ function Maintenance({
     }));
   };
   return (
-    <>
-      <section className="panel form-panel">
-        <h2>Notification recipients</h2>
-        <p className="muted">Add who should receive maintenance emails. Select them when sending below.</p>
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            try {
-              await api('/notifications/recipients', {
-                method: 'POST',
-                body: JSON.stringify(newRecipient),
-              });
-              setNewRecipient({ name: '', email: '' });
-              await loadRecipients();
-              onNotice('Recipient added.', 'success');
-            } catch (x) {
-              onNotice((x as Error).message, 'error');
-            }
-          }}
-        >
-          <div className="form-row">
-            <label>
-              Name
-              <input
-                required
-                value={newRecipient.name}
-                onChange={(e) => setNewRecipient({ ...newRecipient, name: e.target.value })}
-              />
-            </label>
-            <label>
-              Email
-              <input
-                type="email"
-                required
-                value={newRecipient.email}
-                onChange={(e) => setNewRecipient({ ...newRecipient, email: e.target.value })}
-              />
-            </label>
-          </div>
-          <button type="submit" className="btn secondary">
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Maintenance notifications</h2>
+          <p>Manage recipients and send SMTP announcements</p>
+        </div>
+        <div className="heading-actions">
+          <button type="button" className="btn secondary" onClick={() => setShowRecipient(true)}>
             Add recipient
           </button>
-        </form>
-        {!recipients.length && (
-          <p className="muted">No recipients yet — add at least one before sending.</p>
-        )}
-        {!!recipients.length && (
-          <ul className="recipient-list">
-            {recipients.map((r) => (
-              <li key={r.id}>
-                <b>{r.name}</b> — {r.email}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-      <section className="panel form-panel">
-        <h2>Send maintenance notification</h2>
-        <p>Compose and queue an email via SMTP (configure SMTP in <code>.env</code>).</p>
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!form.recipientIds.length) {
-              onNotice('Select at least one recipient.', 'warning');
-              return;
-            }
-            const payload = {
-              title: form.title.trim(),
-              subject: form.subject.trim(),
-              description: form.description,
-              startAt: form.startAt || null,
-              endAt: form.endAt || null,
-              recipientIds: form.recipientIds,
-            };
-            try {
-              await api('/notifications/send', {
-                method: 'POST',
-                body: JSON.stringify(payload),
-              });
-              onNotice('Maintenance notification queued.', 'success');
-            } catch (x) {
-              onNotice((x as Error).message, 'error');
-            }
-          }}
-        >
-          <label>
-            Subject
-            <input
-              required
-              value={form.subject}
-              onChange={(e) => setForm({ ...form, subject: e.target.value })}
-            />
-          </label>
-          <label>
-            Maintenance title
-            <input
-              required
-              value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
-            />
-          </label>
-          <label>
-            Description
-            <textarea
-              rows={4}
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-            />
-          </label>
-          <div className="form-row">
-            <label>
-              Start time
-              <input
-                type="datetime-local"
-                value={form.startAt}
-                onChange={(e) => setForm({ ...form, startAt: e.target.value })}
-              />
-            </label>
-            <label>
-              Expected end
-              <input
-                type="datetime-local"
-                value={form.endAt}
-                onChange={(e) => setForm({ ...form, endAt: e.target.value })}
-              />
-            </label>
-          </div>
-          <fieldset className="recipient-pick">
-            <legend>Recipients</legend>
-            {recipients.map((r) => (
-              <label key={r.id} className="check-row">
-                <input
-                  type="checkbox"
-                  checked={form.recipientIds.includes(r.id)}
-                  onChange={() => toggleRecipient(r.id)}
-                />
-                {r.name} — {r.email}
-              </label>
-            ))}
-            {!recipients.length && <p className="muted">Add recipients in the section above first.</p>}
-          </fieldset>
-          <button type="submit" className="btn primary">
-            Queue notification
+          <button type="button" className="btn primary" onClick={() => setShowSend(true)}>
+            <Mail size={16} /> Send email
           </button>
-        </form>
-      </section>
-    </>
+        </div>
+      </div>
+      {!recipients.length ? (
+        <Empty text="No recipients yet — add one before sending maintenance mail." />
+      ) : (
+        <ul className="recipient-list">
+          {recipients.map((r) => (
+            <li key={r.id}>
+              <b>{r.name}</b> — {r.email}
+            </li>
+          ))}
+        </ul>
+      )}
+      {showRecipient && (
+        <FormModal title="Add recipient" onClose={() => setShowRecipient(false)}>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await api('/notifications/recipients', {
+                  method: 'POST',
+                  body: JSON.stringify(newRecipient),
+                });
+                setNewRecipient({ name: '', email: '' });
+                setShowRecipient(false);
+                await loadRecipients();
+                onNotice('Recipient added.', 'success');
+              } catch (x) {
+                onNotice((x as Error).message, 'error');
+              }
+            }}
+          >
+            <div className="form-row">
+              <label>
+                Name
+                <input
+                  required
+                  value={newRecipient.name}
+                  onChange={(e) => setNewRecipient({ ...newRecipient, name: e.target.value })}
+                />
+              </label>
+              <label>
+                Email
+                <input
+                  type="email"
+                  required
+                  value={newRecipient.email}
+                  onChange={(e) => setNewRecipient({ ...newRecipient, email: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn secondary" onClick={() => setShowRecipient(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn primary">
+                Save
+              </button>
+            </div>
+          </form>
+        </FormModal>
+      )}
+      {showSend && (
+        <FormModal title="Send maintenance notification" onClose={() => setShowSend(false)}>
+          <p className="muted">Requires SMTP settings in <code>.env</code>.</p>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!form.recipientIds.length) {
+                onNotice('Select at least one recipient.', 'warning');
+                return;
+              }
+              const payload = {
+                title: form.title.trim(),
+                subject: form.subject.trim(),
+                description: form.description,
+                startAt: form.startAt || null,
+                endAt: form.endAt || null,
+                recipientIds: form.recipientIds,
+              };
+              try {
+                await api('/notifications/send', {
+                  method: 'POST',
+                  body: JSON.stringify(payload),
+                });
+                setForm(emptyMaintenanceForm());
+                setShowSend(false);
+                onNotice('Maintenance notification queued.', 'success');
+              } catch (x) {
+                onNotice((x as Error).message, 'error');
+              }
+            }}
+          >
+            <label>
+              Subject
+              <input required value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} />
+            </label>
+            <label>
+              Maintenance title
+              <input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+            </label>
+            <label>
+              Description
+              <textarea
+                rows={4}
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+              />
+            </label>
+            <div className="form-row">
+              <label>
+                Start time
+                <input
+                  type="datetime-local"
+                  value={form.startAt}
+                  onChange={(e) => setForm({ ...form, startAt: e.target.value })}
+                />
+              </label>
+              <label>
+                Expected end
+                <input
+                  type="datetime-local"
+                  value={form.endAt}
+                  onChange={(e) => setForm({ ...form, endAt: e.target.value })}
+                />
+              </label>
+            </div>
+            <fieldset className="recipient-pick">
+              <legend>Recipients</legend>
+              {recipients.map((r) => (
+                <label key={r.id} className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={form.recipientIds.includes(r.id)}
+                    onChange={() => toggleRecipient(r.id)}
+                  />
+                  {r.name} — {r.email}
+                </label>
+              ))}
+              {!recipients.length && <p className="muted">Add a recipient first.</p>}
+            </fieldset>
+            <div className="modal-actions">
+              <button type="button" className="btn secondary" onClick={() => setShowSend(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn primary">
+                Queue notification
+              </button>
+            </div>
+          </form>
+        </FormModal>
+      )}
+    </section>
   );
 }
 function Backups({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
@@ -1048,38 +1112,71 @@ function Backups({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
 }
 function Updates({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
   const [items, setItems] = useState<any[]>([]);
+  const [hint, setHint] = useState('');
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const scan = async () => {
+    try {
+      const d = await api('/updates/scan', { method: 'POST' });
+      setItems(d.items || []);
+      setConfigured(d.configured !== false);
+      setHint(d.message || '');
+      onNotice(d.message || 'Update scan completed.', 'success');
+    } catch (e) {
+      onNotice((e as Error).message, 'error');
+    }
+  };
   return (
     <section className="panel">
       <div className="panel-head">
         <div>
           <h2>Docker updates</h2>
-          <p>Review image updates before applying them</p>
+          <p>
+            Pulled from What&apos;s Up Docker when <code>WUD_URL</code> is set in <code>.env</code>
+          </p>
         </div>
-        <button
-          className="btn secondary"
-          onClick={async () => {
-            try {
-              const d = await api("/updates/scan", { method: "POST" });
-              setItems(d.items || []);
-              onNotice('Update scan completed.', 'success');
-            } catch (e) {
-              onNotice((e as Error).message, 'error');
-            }
-          }}
-        >
-          Scan images
+        <button type="button" className="btn secondary" onClick={() => void scan()}>
+          <RefreshCw size={15} /> Scan images
         </button>
       </div>
+      {hint && configured === false && <p className="muted">{hint}</p>}
       {items.length ? (
-        <pre className="json-view">{JSON.stringify(items, null, 2)}</pre>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Container</th>
+                <th>Image</th>
+                <th>Running</th>
+                <th>Available</th>
+                <th>Change</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((u: any) => (
+                <tr key={u.id || u.name}>
+                  <td>
+                    <b>{u.name}</b>
+                  </td>
+                  <td>{u.image || '—'}</td>
+                  <td>{u.currentTag || '—'}</td>
+                  <td>{u.availableTag || '—'}</td>
+                  <td>
+                    <span className="status-pill">{u.updateKind || 'update'}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : (
-        <Empty text="Run a scan to check configured image updates." />
+        <Empty text="Run scan to import updates from What's Up Docker (same data as the WUD dashboard)." />
       )}
     </section>
   );
 }
 function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
   const [items, setItems] = useState<any[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
   const [draft, setDraft] = useState({ hostname: '', checkUrl: '' });
   const load = () =>
     api('/domains')
@@ -1090,76 +1187,33 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
   }, []);
   return (
     <>
-      <section className="panel form-panel">
-        <h2>Add domain to monitor</h2>
-        <p className="muted">
-          Use HTTPS check URLs when possible so certificate expiry is read from the live TLS handshake.
-        </p>
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            try {
-              await api('/domains', {
-                method: 'POST',
-                body: JSON.stringify({
-                  hostname: draft.hostname.trim(),
-                  checkUrl: draft.checkUrl.trim() || `https://${draft.hostname.trim()}`,
-                  enabled: true,
-                }),
-              });
-              setDraft({ hostname: '', checkUrl: '' });
-              await load();
-              onNotice('Domain added.', 'success');
-            } catch (x) {
-              onNotice((x as Error).message, 'error');
-            }
-          }}
-        >
-          <label>
-            Hostname
-            <input
-              required
-              placeholder="central.albyn.site"
-              value={draft.hostname}
-              onChange={(e) => setDraft({ ...draft, hostname: e.target.value })}
-            />
-          </label>
-          <label>
-            Check URL (optional)
-            <input
-              type="url"
-              placeholder="https://central.albyn.site"
-              value={draft.checkUrl}
-              onChange={(e) => setDraft({ ...draft, checkUrl: e.target.value })}
-            />
-          </label>
-          <button type="submit" className="btn primary">
-            Add domain
-          </button>
-        </form>
-      </section>
       <section className="panel">
         <div className="panel-head">
           <div>
             <h2>Domains & SSL</h2>
             <p>Run a check to probe HTTP status and read the certificate expiry from the server</p>
           </div>
-          <button
-            type="button"
-            className="btn secondary"
-            disabled={!items.length}
-            onClick={async () => {
-              try {
-                await api('/domains/check-all', { method: 'POST' });
-                await load();
-                onNotice('SSL checks completed.', 'success');
-              } catch (x) {
-                onNotice((x as Error).message, 'error');
-              }
-            }}
-          >
-            <RefreshCw size={15} /> Run SSL checks
-          </button>
+          <div className="heading-actions">
+            <button type="button" className="btn secondary" onClick={() => setShowAdd(true)}>
+              Add domain
+            </button>
+            <button
+              type="button"
+              className="btn secondary"
+              disabled={!items.length}
+              onClick={async () => {
+                try {
+                  await api('/domains/check-all', { method: 'POST' });
+                  await load();
+                  onNotice('SSL checks completed.', 'success');
+                } catch (x) {
+                  onNotice((x as Error).message, 'error');
+                }
+              }}
+            >
+              <RefreshCw size={15} /> Run SSL checks
+            </button>
+          </div>
         </div>
         <div className="table-wrap">
           <table>
@@ -1223,9 +1277,62 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
               })}
             </tbody>
           </table>
-          {!items.length && <Empty text="No monitored domains yet — add one above." />}
+          {!items.length && <Empty text="No monitored domains yet — use Add domain." />}
         </div>
       </section>
+      {showAdd && (
+        <FormModal title="Add domain" onClose={() => setShowAdd(false)}>
+          <p className="muted">Prefer HTTPS check URLs so certificate expiry can be read from TLS.</p>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await api('/domains', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    hostname: draft.hostname.trim(),
+                    checkUrl: draft.checkUrl.trim() || `https://${draft.hostname.trim()}`,
+                    enabled: true,
+                  }),
+                });
+                setDraft({ hostname: '', checkUrl: '' });
+                setShowAdd(false);
+                await load();
+                onNotice('Domain added.', 'success');
+              } catch (x) {
+                onNotice((x as Error).message, 'error');
+              }
+            }}
+          >
+            <label>
+              Hostname
+              <input
+                required
+                placeholder="central.albyn.site"
+                value={draft.hostname}
+                onChange={(e) => setDraft({ ...draft, hostname: e.target.value })}
+              />
+            </label>
+            <label>
+              Check URL (optional)
+              <input
+                type="url"
+                placeholder="https://central.albyn.site"
+                value={draft.checkUrl}
+                onChange={(e) => setDraft({ ...draft, checkUrl: e.target.value })}
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="btn secondary" onClick={() => setShowAdd(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn primary">
+                Save
+              </button>
+            </div>
+          </form>
+        </FormModal>
+      )}
     </>
   );
 }
