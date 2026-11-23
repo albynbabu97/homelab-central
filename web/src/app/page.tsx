@@ -1093,7 +1093,7 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
       <section className="panel form-panel">
         <h2>Add domain to monitor</h2>
         <p className="muted">
-          Hostnames are stored for tracking. Automated HTTPS checks and expiry alerts are planned; add domains here to prepare your inventory.
+          Use HTTPS check URLs when possible so certificate expiry is read from the live TLS handshake.
         </p>
         <form
           onSubmit={async (e) => {
@@ -1142,8 +1142,24 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
         <div className="panel-head">
           <div>
             <h2>Domains & SSL</h2>
-            <p>Availability and certificate monitoring</p>
+            <p>Run a check to probe HTTP status and read the certificate expiry from the server</p>
           </div>
+          <button
+            type="button"
+            className="btn secondary"
+            disabled={!items.length}
+            onClick={async () => {
+              try {
+                await api('/domains/check-all', { method: 'POST' });
+                await load();
+                onNotice('SSL checks completed.', 'success');
+              } catch (x) {
+                onNotice((x as Error).message, 'error');
+              }
+            }}
+          >
+            <RefreshCw size={15} /> Run SSL checks
+          </button>
         </div>
         <div className="table-wrap">
           <table>
@@ -1152,26 +1168,59 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
                 <th>Hostname</th>
                 <th>HTTP</th>
                 <th>Certificate expiry</th>
+                <th>Issuer</th>
                 <th>Last checked</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              {items.map((d) => (
-                <tr key={d.id}>
-                  <td>{d.hostname}</td>
-                  <td>{d.lastCheck?.httpStatus ?? '—'}</td>
-                  <td>
-                    {d.lastCheck?.certExpiry
-                      ? new Date(d.lastCheck.certExpiry).toLocaleDateString()
-                      : '—'}
-                  </td>
-                  <td>
-                    {d.lastCheck?.checkedAt
-                      ? new Date(d.lastCheck.checkedAt).toLocaleString()
-                      : 'Never'}
-                  </td>
-                </tr>
-              ))}
+              {items.map((d) => {
+                const expiry = d.lastCheck?.certExpiry
+                  ? new Date(d.lastCheck.certExpiry)
+                  : null;
+                const daysLeft = expiry
+                  ? Math.ceil((expiry.getTime() - Date.now()) / 86_400_000)
+                  : null;
+                const expiryClass =
+                  daysLeft != null && daysLeft < 30
+                    ? 'cert-warn'
+                    : daysLeft != null && daysLeft < 0
+                      ? 'cert-bad'
+                      : '';
+                return (
+                  <tr key={d.id}>
+                    <td>{d.hostname}</td>
+                    <td>{d.lastCheck?.httpStatus ?? '—'}</td>
+                    <td className={expiryClass}>
+                      {expiry
+                        ? `${expiry.toLocaleDateString()}${daysLeft != null ? ` (${daysLeft}d)` : ''}`
+                        : '—'}
+                    </td>
+                    <td>{d.lastCheck?.certIssuer || '—'}</td>
+                    <td>
+                      {d.lastCheck?.checkedAt
+                        ? new Date(d.lastCheck.checkedAt).toLocaleString()
+                        : 'Never'}
+                    </td>
+                    <td className="actions">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await api(`/domains/${d.id}/check`, { method: 'POST' });
+                            await load();
+                            onNotice(`Checked ${d.hostname}.`, 'success');
+                          } catch (x) {
+                            onNotice((x as Error).message, 'error');
+                          }
+                        }}
+                      >
+                        Check
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {!items.length && <Empty text="No monitored domains yet — add one above." />}

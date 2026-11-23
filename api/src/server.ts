@@ -1,5 +1,6 @@
-import "dotenv/config";
-import express, { Request, Response, NextFunction } from "express";
+import 'dotenv/config';
+import tls from 'tls';
+import express, { Request, Response, NextFunction } from 'express';
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
@@ -95,7 +96,95 @@ const fail = (res: Response, msg: string, status = 400) =>
   res.status(status).json({ success: false, error: msg });
 // Express may type :id params as string | string[]; Prisma and audit expect a single string.
 const routeParam = (v: string | string[]) => (Array.isArray(v) ? v[0] : v);
-app.get("/health", (_q, r) => ok(r, { status: "ok" }));
+
+const getTlsCertMeta = (host: string, port: number) =>
+  new Promise<{ validTo: Date; issuer: string }>((resolve, reject) => {
+    const socket = tls.connect(
+      { host, port, servername: host, rejectUnauthorized: false },
+      () => {
+        const cert = socket.getPeerCertificate();
+        socket.end();
+        if (!cert?.valid_to) return reject(new Error('No certificate returned'));
+        resolve({
+          validTo: new Date(cert.valid_to),
+          issuer: cert.issuer?.O || cert.issuer?.CN || 'unknown',
+        });
+      },
+    );
+    socket.setTimeout(12_000, () => {
+      socket.destroy();
+      reject(new Error('TLS handshake timed out'));
+    });
+    socket.on('error', reject);
+  });
+
+const probeDomain = async (hostname: string, checkUrl?: string | null) => {
+  const urlStr = (checkUrl || `https://${hostname}`).trim();
+  const started = Date.now();
+  let httpStatus: number | null = null;
+  let reachable = false;
+  let certExpiry: Date | null = null;
+  let certIssuer: string | null = null;
+  let error: string | null = null;
+  try {
+    const target = new URL(urlStr);
+    for (const method of ['HEAD', 'GET'] as const) {
+      try {
+        const resp = await fetch(urlStr, {
+          method,
+          redirect: 'follow',
+          signal: AbortSignal.timeout(12_000),
+        });
+        httpStatus = resp.status;
+        reachable = resp.status < 500;
+        break;
+      } catch (e) {
+        error = String(e);
+      }
+    }
+    if (target.protocol === 'https:') {
+      try {
+        const tlsMeta = await getTlsCertMeta(
+          target.hostname,
+          target.port ? Number(target.port) : 443,
+        );
+        certExpiry = tlsMeta.validTo;
+        certIssuer = tlsMeta.issuer;
+      } catch (e) {
+        error = error ? `${error}; TLS: ${e}` : `TLS: ${e}`;
+      }
+    }
+  } catch (e) {
+    error = String(e);
+  }
+  return {
+    reachable,
+    httpStatus,
+    responseMs: Date.now() - started,
+    certExpiry,
+    certIssuer,
+    error,
+  };
+};
+
+const runDomainCheck = async (domainId: string) => {
+  const domain = await db.domain.findUnique({ where: { id: domainId } });
+  if (!domain || !domain.enabled) return null;
+  const result = await probeDomain(domain.hostname, domain.checkUrl);
+  return db.domainCheck.create({
+    data: {
+      domainId: domain.id,
+      reachable: result.reachable,
+      httpStatus: result.httpStatus,
+      responseMs: result.responseMs,
+      certExpiry: result.certExpiry,
+      certIssuer: result.certIssuer,
+      error: result.error,
+    },
+  });
+};
+
+app.get('/health', (_q, r) => ok(r, { status: 'ok' }));
 app.post("/auth/login", async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return fail(res, "Email and password are required");
@@ -486,17 +575,42 @@ app.put("/domains/:id", auth, async (req, res) =>
     }),
   ),
 );
-app.delete("/domains/:id", auth, async (req: Authed, res) => {
+app.delete('/domains/:id', auth, async (req: Authed, res) => {
   await db.domain.delete({ where: { id: routeParam(req.params.id) } });
   await audit(
     req,
-    "domain.deleted",
-    "domain",
+    'domain.deleted',
+    'domain',
     routeParam(req.params.id),
-    "success",
+    'success',
   );
   ok(res, { deleted: true });
 });
-app.listen(PORT, "0.0.0.0", () =>
+app.post('/domains/:id/check', auth, async (req: Authed, res) => {
+  const id = routeParam(req.params.id);
+  try {
+    const check = await runDomainCheck(id);
+    if (!check) return fail(res, 'Domain not found or disabled', 404);
+    await audit(req, 'domain.checked', 'domain', id, 'success');
+    ok(res, { check });
+  } catch (e) {
+    await audit(req, 'domain.checked', 'domain', id, 'failed', { error: String(e) });
+    return fail(res, 'Domain check failed', 502);
+  }
+});
+app.post('/domains/check-all', auth, async (req: Authed, res) => {
+  const domains = await db.domain.findMany({ where: { enabled: true } });
+  const results = [];
+  for (const domain of domains) {
+    try {
+      results.push({ domainId: domain.id, check: await runDomainCheck(domain.id) });
+    } catch (e) {
+      results.push({ domainId: domain.id, error: String(e) });
+    }
+  }
+  await audit(req, 'domain.check_all', 'domain', null, 'success', { count: domains.length });
+  ok(res, { checked: results.length, results });
+});
+app.listen(PORT, '0.0.0.0', () =>
   console.log(`Homelab Central API listening on ${PORT}`),
 );
