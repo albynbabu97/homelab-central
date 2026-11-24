@@ -348,6 +348,24 @@ app.post("/operations", auth, pinLimiter, async (req: Authed, res) => {
     return fail(res, "Operation could not be executed", 502);
   }
 });
+const persistHostMetrics = (host: {
+  cpu?: number | null;
+  memory?: number | null;
+  disk?: number | null;
+}) => {
+  const rows: { name: string; value: number; unit: string }[] = [];
+  if (typeof host.cpu === "number")
+    rows.push({ name: "cpu", value: host.cpu, unit: "percent" });
+  if (typeof host.memory === "number")
+    rows.push({ name: "memory", value: host.memory, unit: "percent" });
+  if (typeof host.disk === "number")
+    rows.push({ name: "disk", value: host.disk, unit: "percent" });
+  if (!rows.length) return Promise.resolve();
+  return db.metricSample
+    .createMany({ data: rows })
+    .catch(() => undefined);
+};
+
 app.get("/dashboard/summary", auth, async (_q, res) => {
   try {
     const r = await fetch(`${process.env.HOST_HELPER_URL}/metrics`, {
@@ -355,6 +373,7 @@ app.get("/dashboard/summary", auth, async (_q, res) => {
       signal: AbortSignal.timeout(2500),
     });
     const host = r.ok ? await r.json() : {};
+    void persistHostMetrics(host);
     const c = await fetch(`${process.env.DOCKER_GATEWAY_URL}/containers`, {
       headers: { Authorization: `Bearer ${process.env.DOCKER_GATEWAY_TOKEN}` },
     });
@@ -373,6 +392,27 @@ app.get("/dashboard/summary", auth, async (_q, res) => {
       containers: { running: 0, total: 0 },
     });
   }
+});
+
+app.get("/metrics/history", auth, async (req, res) => {
+  const hours = Math.min(
+    168,
+    Math.max(1, Number(req.query.hours) || 6),
+  );
+  const since = new Date(Date.now() - hours * 3_600_000);
+  const samples = await db.metricSample.findMany({
+    where: { collectedAt: { gte: since } },
+    orderBy: { collectedAt: "asc" },
+    take: 2000,
+  });
+  const series: Record<string, { t: string; v: number }[]> = {};
+  for (const s of samples) {
+    (series[s.name] ||= []).push({
+      t: s.collectedAt.toISOString(),
+      v: s.value,
+    });
+  }
+  ok(res, { series, since: since.toISOString() });
 });
 app.get("/docker/containers", auth, async (_q, res) => {
   try {

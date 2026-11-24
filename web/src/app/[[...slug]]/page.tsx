@@ -279,8 +279,10 @@ function HomeDashboard() {
   };
   const [mobile, setMobile] = useState(false);
   const [updateAlerts, setUpdateAlerts] = useState<any[]>([]);
+  const [updateScannedAt, setUpdateScannedAt] = useState<string | null>(null);
   const [notifOpen, setNotifOpen] = useState(false);
   const [toastQueue, setToastQueue] = useState<{ id: number; text: string; tone: NoticeTone }[]>([]);
+  const NOTIF_DISMISS_KEY = 'homelab-notif-dismissed-scan';
   useEffect(() => {
     api("/auth/me")
       .then(() => setAuthed(true))
@@ -310,17 +312,40 @@ function HomeDashboard() {
   useEffect(() => {
     setNotice('');
   }, [page]);
+  const applyUpdateAlerts = (d: { items?: any[]; scannedAt?: string | null }) => {
+    const items = d.items || [];
+    const scannedAt = d.scannedAt || null;
+    setUpdateScannedAt(scannedAt);
+    let dismissed = '';
+    try {
+      dismissed = localStorage.getItem(NOTIF_DISMISS_KEY) || '';
+    } catch {
+      /* private mode */
+    }
+    if (scannedAt && dismissed === scannedAt) {
+      setUpdateAlerts([]);
+    } else {
+      setUpdateAlerts(items);
+    }
+    return items;
+  };
   const loadUpdateAlerts = () =>
     api('/updates')
-      .then((d) => {
-        const items = d.items || [];
-        setUpdateAlerts(items);
-        return items;
-      })
+      .then((d) => applyUpdateAlerts(d))
       .catch(() => {
         setUpdateAlerts([]);
         return [] as any[];
       });
+  const clearNotifications = () => {
+    try {
+      if (updateScannedAt) localStorage.setItem(NOTIF_DISMISS_KEY, updateScannedAt);
+    } catch {
+      /* private mode */
+    }
+    setUpdateAlerts([]);
+    setToastQueue([]);
+    setNotifOpen(false);
+  };
   useEffect(() => {
     if (!authed) return;
     let cancelled = false;
@@ -479,9 +504,16 @@ function HomeDashboard() {
                 <div className="notif-panel" role="dialog" aria-label="Notifications">
                   <div className="notif-panel-head">
                     <b>Notifications</b>
-                    <button type="button" className="icon-btn" onClick={() => setNotifOpen(false)} aria-label="Close">
-                      <X size={16} />
-                    </button>
+                    <div className="notif-panel-tools">
+                      {(updateAlerts.length > 0 || toastQueue.length > 0) && (
+                        <button type="button" className="text-btn notif-clear" onClick={clearNotifications}>
+                          Clear
+                        </button>
+                      )}
+                      <button type="button" className="icon-btn" onClick={() => setNotifOpen(false)} aria-label="Close">
+                        <X size={16} />
+                      </button>
+                    </div>
                   </div>
                   {updateAlerts.length ? (
                     <>
@@ -712,111 +744,15 @@ function HomeDashboard() {
             <ApplicationsPanel apps={apps} onRefresh={refresh} onNotice={pushNoticeScoped} />
           )}
           {page === "docker" && (
-            <section className="panel">
-              <div className="panel-head">
-                <div>
-                  <h2>Docker containers</h2>
-                  <p>Live container inventory</p>
-                </div>
-                <button className="btn secondary" onClick={refresh}>
-                  <RefreshCw size={15} /> Refresh
-                </button>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Container</th>
-                      <th>Image</th>
-                      <th>Status</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {containers.map((c) => (
-                      <tr key={c.id}>
-                        <td>
-                          <b>{c.name}</b>
-                          <small className="block">
-                            {c.project || "Docker"}
-                          </small>
-                        </td>
-                        <td>{c.image}</td>
-                        <td>
-                          <span className="status-pill">{c.status}</span>
-                        </td>
-                        <td className="actions">
-                          <button
-                            onClick={() =>
-                              setModal({
-                                action: "container.restart",
-                                resourceId: c.id,
-                                title: `restart ${c.name}`,
-                              })
-                            }
-                          >
-                            Restart
-                          </button>
-                          <button
-                            onClick={() =>
-                              setModal({
-                                action: c.running
-                                  ? "container.stop"
-                                  : "container.start",
-                                resourceId: c.id,
-                                title: `${c.running ? "stop" : "start"} ${c.name}`,
-                              })
-                            }
-                          >
-                            {c.running ? "Stop" : "Start"}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {!containers.length && (
-                  <Empty text="Docker gateway unavailable or no containers found." />
-                )}
-              </div>
-            </section>
+            <DockerContainersPanel
+              containers={containers}
+              onRefresh={refresh}
+              onPinAction={(action, resourceId, title) =>
+                setModal({ action, resourceId, title })
+              }
+            />
           )}
-          {page === "monitoring" && (
-            <section className="panel">
-              <div className="panel-head">
-                <div>
-                  <h2>Server metrics</h2>
-                  <p>Live host metrics · refreshes every 15 seconds</p>
-                </div>
-              </div>
-              <div className="stats-grid">
-                <Stat
-                  icon={Cpu}
-                  label="CPU"
-                  value={summary.cpu == null ? "—" : `${summary.cpu}%`}
-                />
-                <Stat
-                  icon={Monitor}
-                  label="Memory"
-                  value={summary.memory == null ? "—" : `${summary.memory}%`}
-                />
-                <Stat
-                  icon={HardDrive}
-                  label="Disk"
-                  value={summary.disk == null ? "—" : `${summary.disk}%`}
-                />
-                <Stat
-                  icon={Wifi}
-                  label="Uptime"
-                  value={summary.uptime || "—"}
-                />
-              </div>
-              <p className="muted">
-                Historical charts become available after the metrics collector
-                has accumulated samples.
-              </p>
-            </section>
-          )}
+          {page === "monitoring" && <ServerMonitoringPanel summary={summary} />}
           {page === 'maintenance' && <Maintenance onNotice={pushNoticeScoped} />}
           {page === 'backups' && <Backups onNotice={pushNoticeScoped} />}
           {page === 'updates' && (
@@ -903,6 +839,240 @@ function Empty({ text }: { text: string }) {
       <CircleAlert size={20} />
       {text}
     </div>
+  );
+}
+function DataCardRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="data-card-row">
+      <span className="data-card-label">{label}</span>
+      <span className="data-card-value">{value}</span>
+    </div>
+  );
+}
+function DockerContainersPanel({
+  containers,
+  onRefresh,
+  onPinAction,
+}: {
+  containers: any[];
+  onRefresh: () => void;
+  onPinAction: (action: string, resourceId: string, title: string) => void;
+}) {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Docker containers</h2>
+          <p>Live container inventory</p>
+        </div>
+        <button className="btn secondary" onClick={onRefresh}>
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </div>
+      <div className="table-wrap table-mobile-cards">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Container</th>
+              <th>Image</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {containers.map((c) => (
+              <tr key={c.id}>
+                <td>
+                  <b>{c.name}</b>
+                  <small className="block">{c.project || 'Docker'}</small>
+                </td>
+                <td>{c.image}</td>
+                <td>
+                  <span className="status-pill">{c.status}</span>
+                </td>
+                <td className="actions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onPinAction('container.restart', c.id, `restart ${c.name}`)
+                    }
+                  >
+                    Restart
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onPinAction(
+                        c.running ? 'container.stop' : 'container.start',
+                        c.id,
+                        `${c.running ? 'stop' : 'start'} ${c.name}`,
+                      )
+                    }
+                  >
+                    {c.running ? 'Stop' : 'Start'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="data-cards">
+          {containers.map((c) => (
+            <article className="data-card" key={c.id}>
+              <div className="data-card-head">
+                <b>{c.name}</b>
+                <span className="status-pill">{c.status}</span>
+              </div>
+              <DataCardRow label="Project" value={c.project || 'Docker'} />
+              <DataCardRow label="Image" value={c.image || '—'} />
+              <div className="data-card-actions">
+                <button
+                  type="button"
+                  className="tile-action"
+                  onClick={() =>
+                    onPinAction('container.restart', c.id, `restart ${c.name}`)
+                  }
+                >
+                  Restart
+                </button>
+                <button
+                  type="button"
+                  className="tile-action"
+                  onClick={() =>
+                    onPinAction(
+                      c.running ? 'container.stop' : 'container.start',
+                      c.id,
+                      `${c.running ? 'stop' : 'start'} ${c.name}`,
+                    )
+                  }
+                >
+                  {c.running ? 'Stop' : 'Start'}
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+        {!containers.length && (
+          <Empty text="Docker gateway unavailable or no containers found." />
+        )}
+      </div>
+    </section>
+  );
+}
+function MetricSparkline({
+  points,
+  color = '#6ca7ff',
+  height = 72,
+}: {
+  points: number[];
+  color?: string;
+  height?: number;
+}) {
+  const w = 400;
+  const vals = points.length ? points : [0];
+  const min = Math.min(0, ...vals);
+  const max = Math.max(100, ...vals);
+  const range = max - min || 1;
+  const pad = 6;
+  const poly = vals
+    .map((v, i) => {
+      const x =
+        vals.length === 1 ? w / 2 : pad + (i / (vals.length - 1)) * (w - pad * 2);
+      const y = height - pad - ((v - min) / range) * (height - pad * 2);
+      return `${x},${y}`;
+    })
+    .join(' ');
+  return (
+    <svg
+      className="metric-spark"
+      viewBox={`0 0 ${w} ${height}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-hidden
+    >
+      <polyline fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" points={poly} />
+    </svg>
+  );
+}
+function ServerMonitoringPanel({ summary }: { summary: Summary }) {
+  const [series, setSeries] = useState<Record<string, number[]>>({
+    cpu: [],
+    memory: [],
+    disk: [],
+  });
+  const mergeSeries = (incoming: Record<string, { t: string; v: number }[]>) => {
+    setSeries((prev) => {
+      const next = { ...prev };
+      for (const key of ['cpu', 'memory', 'disk']) {
+        const fromApi = (incoming[key] || []).map((p) => p.v);
+        if (fromApi.length) next[key] = fromApi.slice(-120);
+        else if (!next[key]?.length) next[key] = [];
+      }
+      return next;
+    });
+  };
+  useEffect(() => {
+    const load = () =>
+      api('/metrics/history?hours=6')
+        .then((d) => mergeSeries(d.series || {}))
+        .catch(() => undefined);
+    void load();
+    const t = setInterval(() => void load(), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    setSeries((prev) => {
+      const next = { ...prev };
+      if (typeof summary.cpu === 'number') {
+        next.cpu = [...(prev.cpu || []), summary.cpu].slice(-120);
+      }
+      if (typeof summary.memory === 'number') {
+        next.memory = [...(prev.memory || []), summary.memory].slice(-120);
+      }
+      if (typeof summary.disk === 'number') {
+        next.disk = [...(prev.disk || []), summary.disk].slice(-120);
+      }
+      return next;
+    });
+  }, [summary.cpu, summary.memory, summary.disk]);
+  const chartHint =
+    series.cpu.length < 2
+      ? 'Chart fills in as new samples are collected (about every 15 seconds).'
+      : 'Trend for the last several hours — one sample per dashboard refresh.';
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Server metrics</h2>
+          <p>Live host metrics · refreshes every 15 seconds</p>
+        </div>
+      </div>
+      <div className="stats-grid">
+        <Stat icon={Cpu} label="CPU" value={summary.cpu == null ? '—' : `${summary.cpu}%`} />
+        <Stat
+          icon={Monitor}
+          label="Memory"
+          value={summary.memory == null ? '—' : `${summary.memory}%`}
+        />
+        <Stat icon={HardDrive} label="Disk" value={summary.disk == null ? '—' : `${summary.disk}%`} />
+        <Stat icon={Wifi} label="Uptime" value={summary.uptime || '—'} />
+      </div>
+      <div className="metric-charts">
+        <div className="metric-chart-card">
+          <div className="metric-chart-label">CPU %</div>
+          <MetricSparkline points={series.cpu} color="#6ca7ff" />
+        </div>
+        <div className="metric-chart-card">
+          <div className="metric-chart-label">Memory %</div>
+          <MetricSparkline points={series.memory} color="#54c69a" />
+        </div>
+        <div className="metric-chart-card">
+          <div className="metric-chart-label">Disk %</div>
+          <MetricSparkline points={series.disk} color="#e9b65b" />
+        </div>
+      </div>
+      <p className="muted">{chartHint}</p>
+    </section>
   );
 }
 function ActivityList({ items }: { items: any[] }) {
@@ -1469,8 +1639,8 @@ function Updates({
       </div>
       {hint && configured === false && <p className="muted">{hint}</p>}
       {items.length ? (
-        <div className="table-wrap">
-          <table>
+        <div className="table-wrap table-mobile-cards">
+          <table className="data-table">
             <thead>
               <tr>
                 <th>Container</th>
@@ -1496,6 +1666,19 @@ function Updates({
               ))}
             </tbody>
           </table>
+          <div className="data-cards">
+            {items.map((u: any) => (
+              <article className="data-card" key={u.id || u.name}>
+                <div className="data-card-head">
+                  <b>{u.name}</b>
+                  <span className="status-pill">{u.updateKind || 'update'}</span>
+                </div>
+                <DataCardRow label="Image" value={u.image || '—'} />
+                <DataCardRow label="Running" value={u.currentTag || '—'} />
+                <DataCardRow label="Available" value={u.availableTag || '—'} />
+              </article>
+            ))}
+          </div>
         </div>
       ) : (
         <Empty text="Run scan to import updates from What's Up Docker (same data as the WUD dashboard)." />
@@ -1544,8 +1727,8 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
             </button>
           </div>
         </div>
-        <div className="table-wrap">
-          <table>
+        <div className="table-wrap table-mobile-cards">
+          <table className="data-table">
             <thead>
               <tr>
                 <th>Hostname</th>
@@ -1570,15 +1753,14 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
                     : daysLeft != null && daysLeft < 0
                       ? 'cert-bad'
                       : '';
+                const expiryLabel = expiry
+                  ? `${expiry.toLocaleDateString()}${daysLeft != null ? ` (${daysLeft}d)` : ''}`
+                  : '—';
                 return (
                   <tr key={d.id}>
                     <td>{d.hostname}</td>
                     <td>{d.lastCheck?.httpStatus ?? '—'}</td>
-                    <td className={expiryClass}>
-                      {expiry
-                        ? `${expiry.toLocaleDateString()}${daysLeft != null ? ` (${daysLeft}d)` : ''}`
-                        : '—'}
-                    </td>
+                    <td className={expiryClass}>{expiryLabel}</td>
                     <td>{d.lastCheck?.certIssuer || '—'}</td>
                     <td>
                       {d.lastCheck?.checkedAt
@@ -1606,6 +1788,63 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
               })}
             </tbody>
           </table>
+          <div className="data-cards">
+            {items.map((d) => {
+              const expiry = d.lastCheck?.certExpiry
+                ? new Date(d.lastCheck.certExpiry)
+                : null;
+              const daysLeft = expiry
+                ? Math.ceil((expiry.getTime() - Date.now()) / 86_400_000)
+                : null;
+              const expiryClass =
+                daysLeft != null && daysLeft < 30
+                  ? 'cert-warn'
+                  : daysLeft != null && daysLeft < 0
+                    ? 'cert-bad'
+                    : '';
+              const expiryLabel = expiry
+                ? `${expiry.toLocaleDateString()}${daysLeft != null ? ` (${daysLeft}d)` : ''}`
+                : '—';
+              return (
+                <article className="data-card" key={d.id}>
+                  <div className="data-card-head">
+                    <b>{d.hostname}</b>
+                    <span className="status-pill">{d.lastCheck?.httpStatus ?? '—'}</span>
+                  </div>
+                  <DataCardRow
+                    label="Certificate expiry"
+                    value={<span className={expiryClass}>{expiryLabel}</span>}
+                  />
+                  <DataCardRow label="Issuer" value={d.lastCheck?.certIssuer || '—'} />
+                  <DataCardRow
+                    label="Last checked"
+                    value={
+                      d.lastCheck?.checkedAt
+                        ? new Date(d.lastCheck.checkedAt).toLocaleString()
+                        : 'Never'
+                    }
+                  />
+                  <div className="data-card-actions">
+                    <button
+                      type="button"
+                      className="tile-action"
+                      onClick={async () => {
+                        try {
+                          await api(`/domains/${d.id}/check`, { method: 'POST' });
+                          await load();
+                          onNotice(`Checked ${d.hostname}.`, 'success');
+                        } catch (x) {
+                          onNotice((x as Error).message, 'error');
+                        }
+                      }}
+                    >
+                      Check SSL
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
           {!items.length && <Empty text="No monitored domains yet — use Add domain." />}
         </div>
       </section>
