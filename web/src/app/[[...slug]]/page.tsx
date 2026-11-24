@@ -851,7 +851,7 @@ function HomeDashboard() {
                         key={a.id}
                       >
                         <AppIconDisplay icon={a.icon} healthStatus={a.healthStatus} />
-                        <div>
+                        <div className="app-card-body">
                           <b>{a.name}</b>
                           <small>{appSubtitle(a)}</small>
                         </div>
