@@ -5,7 +5,6 @@ import { selfhIconUrl } from '@/lib/selfhIcon';
 import {
   Activity,
   AppWindow,
-  Archive,
   Bell,
   Box,
   CheckCircle2,
@@ -13,7 +12,6 @@ import {
   CircleAlert,
   Cloud,
   Cpu,
-  Database,
   ExternalLink,
   HardDrive,
   LayoutDashboard,
@@ -46,6 +44,7 @@ type AppItem = {
   category?: string;
   description?: string;
   healthStatus?: string;
+  healthCheckUrl?: string;
   icon?: string;
   sortOrder?: number;
 };
@@ -56,6 +55,14 @@ type AppDraft = {
   description: string;
   sortOrder: number;
   icon: string;
+  healthCheckUrl: string;
+};
+type SystemAlert = {
+  id: string;
+  type: string;
+  message: string;
+  createdAt: string;
+  read: boolean;
 };
 type NoticeTone = 'success' | 'error' | 'warning';
 const nav = [
@@ -64,7 +71,6 @@ const nav = [
   { id: "docker", label: "Docker", icon: Box },
   { id: "monitoring", label: "Server monitoring", icon: Activity },
   { id: "maintenance", label: "Maintenance", icon: Mail },
-  { id: "backups", label: "Backups", icon: Archive },
   { id: "updates", label: "Updates", icon: RefreshCw },
   { id: "domains", label: "Domains & SSL", icon: ShieldCheck },
   { id: "activity", label: "Activity logs", icon: Bell },
@@ -85,17 +91,72 @@ const appSubtitle = (a: AppItem) => {
   if (!a.healthStatus || a.healthStatus === 'unknown') return category;
   return `${category} · ${a.healthStatus}`;
 };
-const NAV_IDS = new Set(
-  ['overview', 'applications', 'docker', 'monitoring', 'maintenance', 'backups', 'updates', 'domains', 'activity', 'settings'],
-);
-function AppIconDisplay({ icon, size = 34 }: { icon?: string; size?: number }) {
-  const src = selfhIconUrl(icon);
-  if (src) {
-    return <img src={src} alt="" width={size} height={size} className="app-icon-img" loading="lazy" />;
+const healthStatusClass = (status?: string) => {
+  if (status === 'healthy') return 'healthy';
+  if (status === 'degraded') return 'degraded';
+  if (status === 'down') return 'down';
+  return 'unknown';
+};
+const notifUpdateKey = (u: { id?: string; name?: string }) =>
+  `update:${u.id || u.name || 'unknown'}`;
+const copyText = async (text: string, onNotice: (s: string, tone?: NoticeTone) => void) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    onNotice('Copied to clipboard.', 'success');
+  } catch {
+    onNotice('Could not copy.', 'error');
   }
+};
+const NOTIF_READ_KEY = 'homelab-notif-read-ids';
+const NAV_IDS = new Set(
+  ['overview', 'applications', 'docker', 'monitoring', 'maintenance', 'updates', 'domains', 'activity', 'settings'],
+);
+function HealthDot({ status }: { status?: string }) {
+  const cls = healthStatusClass(status);
+  if (!status || status === 'unknown') return null;
+  return <span className={`health-dot ${cls}`} title={`Health: ${status}`} aria-hidden />;
+}
+function AppIconDisplay({
+  icon,
+  size = 34,
+  healthStatus,
+}: {
+  icon?: string;
+  size?: number;
+  healthStatus?: string;
+}) {
+  const src = selfhIconUrl(icon);
   return (
-    <div className="app-icon" style={{ width: size, height: size }}>
-      <AppWindow size={18} />
+    <div className="app-icon-wrap" style={{ width: size, height: size }}>
+      {src ? (
+        <img src={src} alt="" width={size} height={size} className="app-icon-img" loading="lazy" />
+      ) : (
+        <div className="app-icon" style={{ width: size, height: size }}>
+          <AppWindow size={18} />
+        </div>
+      )}
+      <HealthDot status={healthStatus} />
+    </div>
+  );
+}
+function ToastStack({
+  items,
+  onDismiss,
+}: {
+  items: { id: number; text: string; tone: NoticeTone }[];
+  onDismiss: (id: number) => void;
+}) {
+  if (!items.length) return null;
+  return (
+    <div className="toast-stack" aria-live="polite">
+      {items.map((t) => (
+        <div key={t.id} className={`toast-item ${t.tone}`}>
+          <span>{t.text}</span>
+          <button type="button" className="icon-btn toast-close" onClick={() => onDismiss(t.id)} aria-label="Dismiss">
+            <X size={14} />
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -271,18 +332,27 @@ function HomeDashboard() {
     resourceId?: string;
   } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [noticeTone, setNoticeTone] = useState<NoticeTone>('success');
-  const pushNotice = (text: string, tone: NoticeTone = 'success') => {
-    setNotice(text);
-    setNoticeTone(tone);
-  };
   const [mobile, setMobile] = useState(false);
   const [updateAlerts, setUpdateAlerts] = useState<any[]>([]);
   const [updateScannedAt, setUpdateScannedAt] = useState<string | null>(null);
+  const [systemAlerts, setSystemAlerts] = useState<SystemAlert[]>([]);
+  const [readNotifIds, setReadNotifIds] = useState<string[]>([]);
   const [notifOpen, setNotifOpen] = useState(false);
   const [toastQueue, setToastQueue] = useState<{ id: number; text: string; tone: NoticeTone }[]>([]);
   const NOTIF_DISMISS_KEY = 'homelab-notif-dismissed-scan';
+  const pageTitle = nav.find((n) => n.id === page)?.label || 'Overview';
+  useEffect(() => {
+    document.title =
+      page === 'overview' ? 'Homelab Central' : `${pageTitle} · Homelab Central`;
+  }, [page, pageTitle]);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(NOTIF_READ_KEY);
+      if (raw) setReadNotifIds(JSON.parse(raw));
+    } catch {
+      /* ignore */
+    }
+  }, []);
   useEffect(() => {
     api("/auth/me")
       .then(() => setAuthed(true))
@@ -298,9 +368,10 @@ function HomeDashboard() {
     api("/docker/containers")
       .then((d) => setContainers(d.items || d || []))
       .catch(() => {});
-    api("/activities?limit=8")
+    api('/activities?limit=8')
       .then((d) => setActivities(d.items || d || []))
       .catch(() => {});
+    void loadSystemAlerts();
   };
   useEffect(() => {
     if (!authed) return;
@@ -308,10 +379,10 @@ function HomeDashboard() {
     const t = setInterval(refresh, 15000);
     return () => clearInterval(t);
   }, [authed]);
-  // Drop inline banner when switching workspace sections
-  useEffect(() => {
-    setNotice('');
-  }, [page]);
+  const loadSystemAlerts = () =>
+    api('/notifications/alerts')
+      .then((d) => setSystemAlerts(d.items || []))
+      .catch(() => setSystemAlerts([]));
   const applyUpdateAlerts = (d: { items?: any[]; scannedAt?: string | null }) => {
     const items = d.items || [];
     const scannedAt = d.scannedAt || null;
@@ -336,18 +407,44 @@ function HomeDashboard() {
         setUpdateAlerts([]);
         return [] as any[];
       });
-  const clearNotifications = () => {
+  const persistReadIds = (ids: string[]) => {
+    setReadNotifIds(ids);
     try {
-      if (updateScannedAt) localStorage.setItem(NOTIF_DISMISS_KEY, updateScannedAt);
+      localStorage.setItem(NOTIF_READ_KEY, JSON.stringify(ids));
     } catch {
       /* private mode */
     }
+  };
+  const markUpdateRead = (u: { id?: string; name?: string }) => {
+    const key = notifUpdateKey(u);
+    persistReadIds([...new Set([...readNotifIds, key])]);
+  };
+  const markSystemAlertRead = async (id: string) => {
+    await api(`/notifications/alerts/${id}/read`, { method: 'POST' }).catch(() => undefined);
+    setSystemAlerts((list) =>
+      list.map((a) => (a.id === id ? { ...a, read: true } : a)),
+    );
+  };
+  const unreadUpdates = updateAlerts.filter((u) => !readNotifIds.includes(notifUpdateKey(u)));
+  const unreadSystem = systemAlerts.filter((a) => !a.read);
+  const unreadNotifCount = unreadUpdates.length + unreadSystem.length;
+  const clearNotifications = () => {
+    try {
+      if (updateScannedAt) localStorage.setItem(NOTIF_DISMISS_KEY, updateScannedAt);
+      const keys = updateAlerts.map((u) => notifUpdateKey(u));
+      persistReadIds([...new Set([...readNotifIds, ...keys])]);
+    } catch {
+      /* private mode */
+    }
+    void api('/notifications/alerts/read-all', { method: 'POST' })
+      .then(() => loadSystemAlerts())
+      .catch(() => undefined);
     setUpdateAlerts([]);
-    setToastQueue([]);
     setNotifOpen(false);
   };
   useEffect(() => {
     if (!authed) return;
+    void loadSystemAlerts();
     let cancelled = false;
     void loadUpdateAlerts().then((items) => {
       if (cancelled || !items.length) return;
@@ -359,7 +456,10 @@ function HomeDashboard() {
       }
       setNotifOpen(true);
     });
-    const t = setInterval(() => void loadUpdateAlerts(), 5 * 60 * 1000);
+    const t = setInterval(() => {
+      void loadUpdateAlerts();
+      void loadSystemAlerts();
+    }, 5 * 60 * 1000);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -383,7 +483,6 @@ function HomeDashboard() {
     }, 6000);
   };
   const pushNoticeScoped = (text: string, tone: NoticeTone = 'success') => {
-    pushNotice(text, tone);
     enqueueToast(text, tone);
   };
   const act = async (pin: string) => {
@@ -410,7 +509,7 @@ function HomeDashboard() {
   if (authed === null)
     return <div className="loading">Loading Homelab Central…</div>;
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
-  const title = nav.find((n) => n.id === page)?.label || "Overview";
+  const title = pageTitle;
   return (
     <div className="shell">
       <aside className={`sidebar ${mobile ? "open" : ""}`}>
@@ -485,19 +584,19 @@ function HomeDashboard() {
             <div className="notif-wrap">
               <button
                 type="button"
-                className={`icon-btn notif-btn${updateAlerts.length ? ' has-alerts' : ''}`}
+                className={`icon-btn notif-btn${unreadNotifCount ? ' has-alerts' : ''}`}
                 title="Notifications"
                 aria-expanded={notifOpen}
                 aria-label={
-                  updateAlerts.length
-                    ? `${updateAlerts.length} image updates available`
+                  unreadNotifCount
+                    ? `${unreadNotifCount} unread notifications`
                     : 'Notifications'
                 }
                 onClick={() => setNotifOpen((o) => !o)}
               >
                 <Bell size={17} />
-                {updateAlerts.length > 0 && (
-                  <span className="notif-badge">{updateAlerts.length > 9 ? '9+' : updateAlerts.length}</span>
+                {unreadNotifCount > 0 && (
+                  <span className="notif-badge">{unreadNotifCount > 9 ? '9+' : unreadNotifCount}</span>
                 )}
               </button>
               {notifOpen && (
@@ -505,9 +604,9 @@ function HomeDashboard() {
                   <div className="notif-panel-head">
                     <b>Notifications</b>
                     <div className="notif-panel-tools">
-                      {(updateAlerts.length > 0 || toastQueue.length > 0) && (
+                      {unreadNotifCount > 0 && (
                         <button type="button" className="text-btn notif-clear" onClick={clearNotifications}>
-                          Clear
+                          Clear all
                         </button>
                       )}
                       <button type="button" className="icon-btn" onClick={() => setNotifOpen(false)} aria-label="Close">
@@ -515,23 +614,59 @@ function HomeDashboard() {
                       </button>
                     </div>
                   </div>
-                  {updateAlerts.length ? (
+                  {unreadSystem.length > 0 || systemAlerts.some((a) => a.read) ? (
                     <>
-                      <p className="notif-panel-sub">
-                        {updateAlerts.length} Docker image{updateAlerts.length === 1 ? '' : 's'} can be updated
-                      </p>
+                      <p className="notif-panel-sub">System alerts</p>
                       <ul className="notif-list">
-                        {updateAlerts.slice(0, 8).map((u: any) => (
-                          <li key={u.id || u.name}>
-                            <b>{u.name}</b>
-                            <small>
-                              {u.currentTag || '—'} → {u.availableTag || '—'}
-                            </small>
+                        {systemAlerts.slice(0, 12).map((a) => (
+                          <li key={a.id} className={a.read ? 'notif-read' : ''}>
+                            <b>{a.type}</b>
+                            <small>{a.message}</small>
+                            {!a.read && (
+                              <button
+                                type="button"
+                                className="text-btn notif-mark-read"
+                                onClick={() => void markSystemAlertRead(a.id)}
+                              >
+                                Mark read
+                              </button>
+                            )}
                           </li>
                         ))}
                       </ul>
-                      {updateAlerts.length > 8 && (
-                        <p className="muted notif-more">+{updateAlerts.length - 8} more in Updates</p>
+                    </>
+                  ) : null}
+                  {updateAlerts.length ? (
+                    <>
+                      <p className="notif-panel-sub">
+                        {unreadUpdates.length} unread · {updateAlerts.length} Docker update
+                        {updateAlerts.length === 1 ? '' : 's'}
+                      </p>
+                      <ul className="notif-list">
+                        {updateAlerts.slice(0, 12).map((u: any) => {
+                          const key = notifUpdateKey(u);
+                          const isRead = readNotifIds.includes(key);
+                          return (
+                            <li key={key} className={isRead ? 'notif-read' : ''}>
+                              <b>{u.name}</b>
+                              <small>
+                                {u.currentTag || '—'} → {u.availableTag || '—'}
+                              </small>
+                              {!isRead && (
+                                <button
+                                  type="button"
+                                  className="text-btn notif-mark-read"
+                                  onClick={() => markUpdateRead(u)}
+                                >
+                                  Mark read
+                                </button>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                      {updateAlerts.length > 12 && (
+                        <p className="muted notif-more">+{updateAlerts.length - 12} more in Updates</p>
                       )}
                       <button
                         type="button"
@@ -546,16 +681,6 @@ function HomeDashboard() {
                     </>
                   ) : (
                     <p className="muted notif-empty">No pending image updates. Scans run from the Updates page.</p>
-                  )}
-                  {toastQueue.length > 0 && (
-                    <div className="notif-toasts">
-                      <div className="notif-panel-sub">Recent activity</div>
-                      {toastQueue.slice(-4).map((t) => (
-                        <div key={t.id} className={`notif-toast ${t.tone}`}>
-                          {t.text}
-                        </div>
-                      ))}
-                    </div>
                   )}
                 </div>
               )}
@@ -598,18 +723,6 @@ function HomeDashboard() {
               </div>
             )}
           </div>
-          {notice && (
-            <div
-              className={`notice ${noticeTone}`}
-              onClick={() => setNotice('')}
-              role="status"
-            >
-              {notice}
-              <button type="button" aria-label="Dismiss">
-                <X size={14} />
-              </button>
-            </div>
-          )}
           {page === "overview" && (
             <>
               <div className="stats-grid">
@@ -665,10 +778,10 @@ function HomeDashboard() {
                         rel="noreferrer"
                         key={a.id}
                       >
-                        <AppIconDisplay icon={a.icon} />
+                        <AppIconDisplay icon={a.icon} healthStatus={a.healthStatus} />
                         <div>
                           <b>{a.name}</b>
-                          <small>{a.category || "Application"}</small>
+                          <small>{appSubtitle(a)}</small>
                         </div>
                         <ExternalLink size={14} className="external" />
                       </a>
@@ -691,12 +804,6 @@ function HomeDashboard() {
                       title="Send maintenance notice"
                       desc="Notify configured recipients"
                       onClick={() => setPage("maintenance")}
-                    />
-                    <Quick
-                      icon={Database}
-                      title="Create backup"
-                      desc="Start a manual backup"
-                      onClick={() => setPage("backups")}
                     />
                     <Quick
                       icon={RefreshCw}
@@ -754,7 +861,6 @@ function HomeDashboard() {
           )}
           {page === "monitoring" && <ServerMonitoringPanel summary={summary} />}
           {page === 'maintenance' && <Maintenance onNotice={pushNoticeScoped} />}
-          {page === 'backups' && <Backups onNotice={pushNoticeScoped} />}
           {page === 'updates' && (
             <Updates onNotice={pushNoticeScoped} onAlertsRefresh={() => void loadUpdateAlerts()} />
           )}
@@ -773,6 +879,10 @@ function HomeDashboard() {
           {page === 'settings' && <SettingsPage onNotice={pushNoticeScoped} />}
         </div>
       </main>
+      <ToastStack
+        items={toastQueue}
+        onDismiss={(id) => setToastQueue((q) => q.filter((t) => t.id !== id))}
+      />
       {modal && (
         <PinModal
           title={modal.title}
@@ -995,6 +1105,7 @@ function MetricSparkline({
   );
 }
 function ServerMonitoringPanel({ summary }: { summary: Summary }) {
+  const [chartHours, setChartHours] = useState<1 | 6 | 24>(6);
   const [series, setSeries] = useState<Record<string, number[]>>({
     cpu: [],
     memory: [],
@@ -1005,7 +1116,7 @@ function ServerMonitoringPanel({ summary }: { summary: Summary }) {
       const next = { ...prev };
       for (const key of ['cpu', 'memory', 'disk']) {
         const fromApi = (incoming[key] || []).map((p) => p.v);
-        if (fromApi.length) next[key] = fromApi.slice(-120);
+        if (fromApi.length) next[key] = fromApi.slice(-500);
         else if (!next[key]?.length) next[key] = [];
       }
       return next;
@@ -1013,24 +1124,24 @@ function ServerMonitoringPanel({ summary }: { summary: Summary }) {
   };
   useEffect(() => {
     const load = () =>
-      api('/metrics/history?hours=6')
+      api(`/metrics/history?hours=${chartHours}`)
         .then((d) => mergeSeries(d.series || {}))
         .catch(() => undefined);
     void load();
     const t = setInterval(() => void load(), 60_000);
     return () => clearInterval(t);
-  }, []);
+  }, [chartHours]);
   useEffect(() => {
     setSeries((prev) => {
       const next = { ...prev };
       if (typeof summary.cpu === 'number') {
-        next.cpu = [...(prev.cpu || []), summary.cpu].slice(-120);
+        next.cpu = [...(prev.cpu || []), summary.cpu].slice(-500);
       }
       if (typeof summary.memory === 'number') {
-        next.memory = [...(prev.memory || []), summary.memory].slice(-120);
+        next.memory = [...(prev.memory || []), summary.memory].slice(-500);
       }
       if (typeof summary.disk === 'number') {
-        next.disk = [...(prev.disk || []), summary.disk].slice(-120);
+        next.disk = [...(prev.disk || []), summary.disk].slice(-500);
       }
       return next;
     });
@@ -1038,13 +1149,25 @@ function ServerMonitoringPanel({ summary }: { summary: Summary }) {
   const chartHint =
     series.cpu.length < 2
       ? 'Chart fills in as new samples are collected (about every 15 seconds).'
-      : 'Trend for the last several hours — one sample per dashboard refresh.';
+      : `Showing the last ${chartHours} hour${chartHours === 1 ? '' : 's'} of samples.`;
   return (
     <section className="panel">
       <div className="panel-head">
         <div>
           <h2>Server metrics</h2>
           <p>Live host metrics · refreshes every 15 seconds</p>
+        </div>
+        <div className="segmented" role="group" aria-label="Chart time range">
+          {([1, 6, 24] as const).map((h) => (
+            <button
+              key={h}
+              type="button"
+              className={chartHours === h ? 'active' : ''}
+              onClick={() => setChartHours(h)}
+            >
+              {h}h
+            </button>
+          ))}
         </div>
       </div>
       <div className="stats-grid">
@@ -1104,6 +1227,7 @@ const emptyAppDraft = (): AppDraft => ({
   description: '',
   sortOrder: 0,
   icon: '',
+  healthCheckUrl: '',
 });
 
 function AppFormFields({ draft, setDraft }: { draft: AppDraft; setDraft: (d: AppDraft) => void }) {
@@ -1126,6 +1250,15 @@ function AppFormFields({ draft, setDraft }: { draft: AppDraft; setDraft: (d: App
       <label>
         URL
         <input required type="url" value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
+      </label>
+      <label>
+        Health check URL (optional)
+        <input
+          type="url"
+          placeholder="Defaults to app URL — probed every 5 minutes"
+          value={draft.healthCheckUrl}
+          onChange={(e) => setDraft({ ...draft, healthCheckUrl: e.target.value })}
+        />
       </label>
       <label>
         Icon slug (selfh.st)
@@ -1186,6 +1319,7 @@ function ApplicationsPanel({
       description: a.description || '',
       sortOrder: a.sortOrder ?? 0,
       icon: a.icon || '',
+      healthCheckUrl: a.healthCheckUrl || '',
     });
   };
   const savePayload = (d: AppDraft) => ({
@@ -1194,6 +1328,7 @@ function ApplicationsPanel({
     category: d.category.trim() || null,
     description: d.description.trim() || null,
     icon: d.icon.trim() || null,
+    healthCheckUrl: d.healthCheckUrl.trim() || null,
     sortOrder: Number(d.sortOrder) || 0,
     enabled: true,
   });
@@ -1204,15 +1339,32 @@ function ApplicationsPanel({
           <h2>Application launcher</h2>
           <p>Open and monitor registered services</p>
         </div>
-        <button type="button" className="btn primary" onClick={() => { setDraft(emptyAppDraft()); setShowAdd(true); }}>
-          Add application
-        </button>
+        <div className="heading-actions">
+          <button
+            type="button"
+            className="btn secondary"
+            onClick={async () => {
+              try {
+                await api('/applications/health-check', { method: 'POST' });
+                onRefresh();
+                onNotice('Health checks completed.', 'success');
+              } catch (x) {
+                onNotice((x as Error).message, 'error');
+              }
+            }}
+          >
+            <RefreshCw size={15} /> Check health
+          </button>
+          <button type="button" className="btn primary" onClick={() => { setDraft(emptyAppDraft()); setShowAdd(true); }}>
+            Add application
+          </button>
+        </div>
       </div>
       <div className="app-grid large">
         {apps.map((a) => (
           <article className="app-tile" key={a.id}>
             <a className="app-card" href={a.url} target="_blank" rel="noreferrer">
-              <AppIconDisplay icon={a.icon} />
+              <AppIconDisplay icon={a.icon} healthStatus={a.healthStatus} />
               <div className="app-card-body">
                 <b>{a.name}</b>
                 <small>{appSubtitle(a)}</small>
@@ -1544,50 +1696,6 @@ function Maintenance({
     </section>
   );
 }
-function Backups({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
-  const [items, setItems] = useState<any[]>([]);
-  const load = () =>
-    api("/backups")
-      .then((d) => setItems(d.items || []))
-      .catch(() => {});
-  useEffect(() => {
-    void load();
-  }, []);
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        <div>
-          <h2>Backup management</h2>
-          <p>Create and verify configured backups</p>
-        </div>
-        <button
-          className="btn primary"
-          onClick={async () => {
-            try {
-              await api("/backups", {
-                method: "POST",
-                body: JSON.stringify({ type: "config" }),
-              });
-              onNotice('Backup job queued.', 'success');
-              load();
-            } catch (e) {
-              onNotice((e as Error).message, 'error');
-            }
-          }}
-        >
-          Create backup
-        </button>
-      </div>
-      <ActivityList
-        items={items.map((i) => ({
-          ...i,
-          action: i.name,
-          resourceType: i.backupType,
-        }))}
-      />
-    </section>
-  );
-}
 function Updates({
   onNotice,
   onAlertsRefresh,
@@ -1599,12 +1707,37 @@ function Updates({
   const [hint, setHint] = useState('');
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [scannedAt, setScannedAt] = useState<string | null>(null);
+  const [wudUrl, setWudUrl] = useState<string | null>(null);
   const applyUpdatePayload = (d: any) => {
     setItems(d.items || []);
     setConfigured(d.configured !== false);
     setScannedAt(d.scannedAt || null);
+    setWudUrl(d.wudUrl || null);
     if (d.configured === false && d.message) setHint(d.message);
   };
+  const renderUpdateActions = (u: any) => (
+    <div className="data-card-actions update-actions">
+      {u.pullCommand && (
+        <button
+          type="button"
+          className="tile-action"
+          onClick={() => void copyText(u.pullCommand, onNotice)}
+        >
+          Copy pull
+        </button>
+      )}
+      {(u.wudLink || wudUrl) && (
+        <a
+          className="tile-action"
+          href={u.wudLink || wudUrl || '#'}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open in WUD
+        </a>
+      )}
+    </div>
+  );
   useEffect(() => {
     api('/updates')
       .then((d) => {
@@ -1648,6 +1781,7 @@ function Updates({
                 <th>Running</th>
                 <th>Available</th>
                 <th>Change</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1661,6 +1795,23 @@ function Updates({
                   <td>{u.availableTag || '—'}</td>
                   <td>
                     <span className="status-pill">{u.updateKind || 'update'}</span>
+                  </td>
+                  <td className="actions">
+                    {u.pullCommand && (
+                      <button type="button" onClick={() => void copyText(u.pullCommand, onNotice)}>
+                        Copy pull
+                      </button>
+                    )}
+                    {(u.wudLink || wudUrl) && (
+                      <a
+                        className="inline-link"
+                        href={u.wudLink || wudUrl || '#'}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        WUD
+                      </a>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1676,6 +1827,7 @@ function Updates({
                 <DataCardRow label="Image" value={u.image || '—'} />
                 <DataCardRow label="Running" value={u.currentTag || '—'} />
                 <DataCardRow label="Available" value={u.availableTag || '—'} />
+                {renderUpdateActions(u)}
               </article>
             ))}
           </div>
@@ -1905,9 +2057,91 @@ function Domains({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => voi
   );
 }
 function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) => void }) {
-  const [pin, setPin] = useState("");
-  const [oldPin, setOldPin] = useState("");
+  const [pin, setPin] = useState('');
+  const [oldPin, setOldPin] = useState('');
+  const [alerts, setAlerts] = useState({
+    cpuThreshold: 90,
+    diskThreshold: 90,
+    emailEnabled: false,
+    inAppEnabled: true,
+    cooldownMinutes: 60,
+  });
+  useEffect(() => {
+    api('/settings/alerts')
+      .then((d) => setAlerts((a) => ({ ...a, ...d })))
+      .catch(() => undefined);
+  }, []);
   return (
+  <>
+    <section className="panel form-panel">
+      <h2>Metric alerts</h2>
+      <p>Get notified when CPU or disk crosses a threshold (checked on each metrics sample).</p>
+      <form
+        className="alerts-form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          try {
+            const saved = await api('/settings/alerts', { method: 'PUT', body: JSON.stringify(alerts) });
+            setAlerts((a) => ({ ...a, ...saved }));
+            onNotice('Alert settings saved.', 'success');
+          } catch (x) {
+            onNotice((x as Error).message, 'error');
+          }
+        }}
+      >
+        <div className="form-row">
+          <label>
+            CPU threshold %
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={alerts.cpuThreshold}
+              onChange={(e) => setAlerts({ ...alerts, cpuThreshold: Number(e.target.value) })}
+            />
+          </label>
+          <label>
+            Disk threshold %
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={alerts.diskThreshold}
+              onChange={(e) => setAlerts({ ...alerts, diskThreshold: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+        <label>
+          Alert cooldown (minutes)
+          <input
+            type="number"
+            min={5}
+            max={1440}
+            value={alerts.cooldownMinutes}
+            onChange={(e) => setAlerts({ ...alerts, cooldownMinutes: Number(e.target.value) })}
+          />
+        </label>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={alerts.inAppEnabled}
+            onChange={(e) => setAlerts({ ...alerts, inAppEnabled: e.target.checked })}
+          />
+          Show in-app notifications (bell icon)
+        </label>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={alerts.emailEnabled}
+            onChange={(e) => setAlerts({ ...alerts, emailEnabled: e.target.checked })}
+          />
+          Email all active maintenance recipients when SMTP is configured
+        </label>
+        <button className="btn primary" type="submit">
+          Save alert settings
+        </button>
+      </form>
+    </section>
     <section className="panel form-panel">
       <h2>Security settings</h2>
       <p>
@@ -1917,12 +2151,12 @@ function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) =
         onSubmit={async (e) => {
           e.preventDefault();
           try {
-            await api("/security/passcode/setup", {
-              method: "POST",
+            await api('/security/passcode/setup', {
+              method: 'POST',
               body: JSON.stringify({ pin, currentPin: oldPin || undefined }),
             });
-            setPin("");
-            setOldPin("");
+            setPin('');
+            setOldPin('');
             onNotice('Security passcode updated.', 'success');
           } catch (x) {
             onNotice((x as Error).message, 'error');
@@ -1937,7 +2171,7 @@ function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) =
             maxLength={4}
             value={oldPin}
             onChange={(e) =>
-              setOldPin(e.target.value.replace(/\D/g, "").slice(0, 4))
+              setOldPin(e.target.value.replace(/\D/g, '').slice(0, 4))
             }
           />
         </label>
@@ -1951,7 +2185,7 @@ function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) =
             maxLength={4}
             value={pin}
             onChange={(e) =>
-              setPin(e.target.value.replace(/\D/g, "").slice(0, 4))
+              setPin(e.target.value.replace(/\D/g, '').slice(0, 4))
             }
           />
         </label>
@@ -1960,6 +2194,7 @@ function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) =
         </button>
       </form>
     </section>
+  </>
   );
 }
 

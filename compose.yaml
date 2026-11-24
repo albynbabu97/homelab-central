@@ -43,7 +43,6 @@ services:
       SMTP_USER: ${SMTP_USER}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       SMTP_FROM: ${SMTP_FROM}
-      BACKUP_ROOT: ${BACKUP_ROOT}
       WUD_URL: ${WUD_URL:-}
       WUD_API_TOKEN: ${WUD_API_TOKEN:-}
       WUD_USER: ${WUD_USER:-}
@@ -54,8 +53,6 @@ services:
       redis: { condition: service_started }
     # host_access is non-internal so host.docker.internal can reach the native host helper on :4200
     networks: [app, ops, host_access]
-    volumes:
-      - /opt/homelab/data/homelab-central/backups:/backups
   worker:
     build: ./api
     container_name: homelab-central-worker

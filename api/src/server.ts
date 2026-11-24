@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { randomUUID } from 'crypto';
 import tls from 'tls';
 import express, { Request, Response, NextFunction } from 'express';
 import helmet from "helmet";
@@ -348,22 +349,217 @@ app.post("/operations", auth, pinLimiter, async (req: Authed, res) => {
     return fail(res, "Operation could not be executed", 502);
   }
 });
-const persistHostMetrics = (host: {
+const ALERT_SETTINGS_KEY = 'alert_settings';
+const IN_APP_ALERTS_KEY = 'in_app_alerts';
+const ALERT_COOLDOWN_KEY = 'alert_cooldowns';
+
+type AlertSettings = {
+  cpuThreshold: number;
+  diskThreshold: number;
+  emailEnabled: boolean;
+  inAppEnabled: boolean;
+  cooldownMinutes: number;
+};
+
+type InAppAlert = {
+  id: string;
+  type: string;
+  message: string;
+  createdAt: string;
+  read: boolean;
+};
+
+const defaultAlertSettings = (): AlertSettings => ({
+  cpuThreshold: 90,
+  diskThreshold: 90,
+  emailEnabled: false,
+  inAppEnabled: true,
+  cooldownMinutes: 60,
+});
+
+const loadAlertSettings = async (): Promise<AlertSettings> => {
+  const row = await db.setting.findUnique({ where: { key: ALERT_SETTINGS_KEY } });
+  if (!row?.value || typeof row.value !== 'object') return defaultAlertSettings();
+  return { ...defaultAlertSettings(), ...(row.value as AlertSettings) };
+};
+
+const loadInAppAlerts = async (): Promise<InAppAlert[]> => {
+  const row = await db.setting.findUnique({ where: { key: IN_APP_ALERTS_KEY } });
+  if (!Array.isArray(row?.value)) return [];
+  return row!.value as InAppAlert[];
+};
+
+const saveInAppAlerts = async (items: InAppAlert[]) => {
+  await db.setting.upsert({
+    where: { key: IN_APP_ALERTS_KEY },
+    update: { value: items.slice(0, 100) },
+    create: { key: IN_APP_ALERTS_KEY, value: items.slice(0, 100) },
+  });
+};
+
+const pushInAppAlert = async (message: string, type = 'metric') => {
+  const items = await loadInAppAlerts();
+  items.unshift({
+    id: randomUUID(),
+    type,
+    message,
+    createdAt: new Date().toISOString(),
+    read: false,
+  });
+  await saveInAppAlerts(items);
+};
+
+const canSendAlert = async (key: string, cooldownMinutes: number) => {
+  const row = await db.setting.findUnique({ where: { key: ALERT_COOLDOWN_KEY } });
+  const map = (row?.value as Record<string, string>) || {};
+  const last = map[key] ? new Date(map[key]).getTime() : 0;
+  if (Date.now() - last < cooldownMinutes * 60_000) return false;
+  map[key] = new Date().toISOString();
+  await db.setting.upsert({
+    where: { key: ALERT_COOLDOWN_KEY },
+    update: { value: map },
+    create: { key: ALERT_COOLDOWN_KEY, value: map },
+  });
+  return true;
+};
+
+const sendAlertEmail = async (subject: string, text: string) => {
+  if (!process.env.SMTP_HOST?.trim()) return;
+  const recipients = await db.recipient.findMany({ where: { active: true } });
+  if (!recipients.length) return;
+  const transport = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: process.env.SMTP_USER
+      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD }
+      : undefined,
+  });
+  for (const r of recipients) {
+    try {
+      await transport.sendMail({
+        from: process.env.SMTP_FROM,
+        to: r.email,
+        subject,
+        text,
+      });
+    } catch {
+      /* skip recipient */
+    }
+  }
+};
+
+const evaluateMetricAlerts = async (host: {
+  cpu?: number | null;
+  disk?: number | null;
+}) => {
+  const settings = await loadAlertSettings();
+  const checks: { key: string; label: string; value: number; threshold: number }[] = [];
+  if (typeof host.cpu === 'number' && host.cpu >= settings.cpuThreshold) {
+    checks.push({
+      key: 'cpu',
+      label: 'CPU',
+      value: host.cpu,
+      threshold: settings.cpuThreshold,
+    });
+  }
+  if (typeof host.disk === 'number' && host.disk >= settings.diskThreshold) {
+    checks.push({
+      key: 'disk',
+      label: 'Disk',
+      value: host.disk,
+      threshold: settings.diskThreshold,
+    });
+  }
+  for (const c of checks) {
+    if (!(await canSendAlert(`metric-${c.key}`, settings.cooldownMinutes))) continue;
+    const message = `${c.label} usage is ${c.value}% (threshold ${c.threshold}%)`;
+    if (settings.inAppEnabled) await pushInAppAlert(message, 'metric');
+    if (settings.emailEnabled) {
+      await sendAlertEmail(
+        `[Homelab] ${c.label} alert`,
+        `${message}\n\nHomelab Central metric alert`,
+      );
+    }
+  }
+};
+
+const probeAppHealth = async (target: string): Promise<string> => {
+  const url = target.trim();
+  if (!url) return 'unknown';
+  try {
+    const start = Date.now();
+    const r = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8_000),
+      headers: { 'User-Agent': 'HomelabCentral-Health/1.0' },
+    });
+    const ms = Date.now() - start;
+    if (r.status >= 500) return 'down';
+    if (r.status >= 400) return 'degraded';
+    if (ms > 3000) return 'degraded';
+    return 'healthy';
+  } catch {
+    return 'down';
+  }
+};
+
+const runApplicationHealthChecks = async () => {
+  const apps = await db.application.findMany({ where: { enabled: true } });
+  for (const app of apps) {
+    const target = app.healthCheckUrl?.trim() || app.url;
+    const healthStatus = await probeAppHealth(target);
+    await db.application.update({
+      where: { id: app.id },
+      data: { healthStatus },
+    });
+  }
+};
+
+const wudPublicBase = () => process.env.WUD_URL?.replace(/\/$/, '') || null;
+
+const mapWudItem = (c: any) => {
+  const imageName = c.image?.name || c.image?.id?.image || '';
+  const availableTag = c.result?.tag || '';
+  const pullCommand =
+    imageName && availableTag
+      ? `docker pull ${imageName.includes(':') ? imageName.split(':')[0] : imageName}:${availableTag}`
+      : null;
+  const base = wudPublicBase();
+  const wudLink =
+    base && c.id
+      ? `${base}/#/containers/${encodeURIComponent(String(c.id))}`
+      : base;
+  return {
+    id: c.id,
+    name: c.name,
+    image: imageName,
+    currentTag: c.image?.tag?.value,
+    availableTag,
+    updateKind: c.updateKind?.semverDiff || c.updateKind?.kind || 'update',
+    watcher: c.watcher,
+    pullCommand,
+    wudLink,
+  };
+};
+
+const persistHostMetrics = async (host: {
   cpu?: number | null;
   memory?: number | null;
   disk?: number | null;
 }) => {
   const rows: { name: string; value: number; unit: string }[] = [];
-  if (typeof host.cpu === "number")
-    rows.push({ name: "cpu", value: host.cpu, unit: "percent" });
-  if (typeof host.memory === "number")
-    rows.push({ name: "memory", value: host.memory, unit: "percent" });
-  if (typeof host.disk === "number")
-    rows.push({ name: "disk", value: host.disk, unit: "percent" });
-  if (!rows.length) return Promise.resolve();
-  return db.metricSample
-    .createMany({ data: rows })
-    .catch(() => undefined);
+  if (typeof host.cpu === 'number')
+    rows.push({ name: 'cpu', value: host.cpu, unit: 'percent' });
+  if (typeof host.memory === 'number')
+    rows.push({ name: 'memory', value: host.memory, unit: 'percent' });
+  if (typeof host.disk === 'number')
+    rows.push({ name: 'disk', value: host.disk, unit: 'percent' });
+  if (rows.length) {
+    await db.metricSample.createMany({ data: rows }).catch(() => undefined);
+  }
+  await evaluateMetricAlerts(host);
 };
 
 app.get("/dashboard/summary", auth, async (_q, res) => {
@@ -373,7 +569,7 @@ app.get("/dashboard/summary", auth, async (_q, res) => {
       signal: AbortSignal.timeout(2500),
     });
     const host = r.ok ? await r.json() : {};
-    void persistHostMetrics(host);
+    void persistHostMetrics(host).catch(() => undefined);
     const c = await fetch(`${process.env.DOCKER_GATEWAY_URL}/containers`, {
       headers: { Authorization: `Bearer ${process.env.DOCKER_GATEWAY_TOKEN}` },
     });
@@ -621,24 +817,46 @@ app.post("/notifications/send", auth, async (req: Authed, res) => {
     failed ? 207 : 200,
   );
 });
-app.get("/backups", auth, async (_q, res) =>
-  ok(res, {
-    items: await db.backup.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    }),
-  }),
-);
-app.post("/backups", auth, async (req: Authed, res) => {
-  const b = await db.backup.create({
-    data: {
-      name: `${req.body?.type || "config"}-${new Date().toISOString()}`,
-      type: req.body?.type || "config",
-      status: "queued",
-    },
+app.post('/applications/health-check', auth, async (req: Authed, res) => {
+  await runApplicationHealthChecks();
+  await audit(req, 'application.health_check', 'application', null, 'success');
+  ok(res, { ok: true });
+});
+app.get('/settings/alerts', auth, async (_q, res) => {
+  ok(res, await loadAlertSettings());
+});
+app.put('/settings/alerts', auth, async (req: Authed, res) => {
+  const body = req.body || {};
+  const next: AlertSettings = {
+    cpuThreshold: Math.min(100, Math.max(1, Number(body.cpuThreshold) || 90)),
+    diskThreshold: Math.min(100, Math.max(1, Number(body.diskThreshold) || 90)),
+    emailEnabled: !!body.emailEnabled,
+    inAppEnabled: body.inAppEnabled !== false,
+    cooldownMinutes: Math.min(24 * 60, Math.max(5, Number(body.cooldownMinutes) || 60)),
+  };
+  await db.setting.upsert({
+    where: { key: ALERT_SETTINGS_KEY },
+    update: { value: next },
+    create: { key: ALERT_SETTINGS_KEY, value: next },
   });
-  await audit(req, "backup.requested", "backup", b.id, "accepted");
-  ok(res, { id: b.id, status: b.status }, 202);
+  await audit(req, 'settings.alerts.updated', 'setting', ALERT_SETTINGS_KEY, 'success');
+  ok(res, next);
+});
+app.get('/notifications/alerts', auth, async (_q, res) => {
+  ok(res, { items: await loadInAppAlerts() });
+});
+app.post('/notifications/alerts/:id/read', auth, async (req, res) => {
+  const id = routeParam(req.params.id);
+  const items = await loadInAppAlerts();
+  const idx = items.findIndex((a) => a.id === id);
+  if (idx >= 0) items[idx].read = true;
+  await saveInAppAlerts(items);
+  ok(res, { ok: true });
+});
+app.post('/notifications/alerts/read-all', auth, async (_q, res) => {
+  const items = (await loadInAppAlerts()).map((a) => ({ ...a, read: true }));
+  await saveInAppAlerts(items);
+  ok(res, { ok: true });
 });
 const WUD_CACHE_KEY = 'wud_updates_cache';
 
@@ -674,15 +892,7 @@ const pullWudUpdates = async () => {
   const containers = Array.isArray(raw) ? raw : [];
   const items = containers
     .filter((c: { updateAvailable?: boolean }) => c.updateAvailable)
-    .map((c: any) => ({
-      id: c.id,
-      name: c.name,
-      image: c.image?.name,
-      currentTag: c.image?.tag?.value,
-      availableTag: c.result?.tag,
-      updateKind: c.updateKind?.semverDiff || c.updateKind?.kind || 'unknown',
-      watcher: c.watcher,
-    }));
+    .map((c: any) => mapWudItem(c));
   return { configured: true as const, items };
 };
 
@@ -717,6 +927,7 @@ app.get('/updates', auth, async (_q, res) => {
         items,
         scannedAt: fresh.scannedAt,
         refreshed: true,
+        wudUrl: wudPublicBase(),
       });
     } catch {
       /* use cache below */
@@ -727,6 +938,7 @@ app.get('/updates', auth, async (_q, res) => {
     items: cache?.items || [],
     scannedAt: cache?.scannedAt || null,
     refreshed: false,
+    wudUrl: wudPublicBase(),
   });
 });
 
@@ -747,6 +959,7 @@ app.post('/updates/scan', auth, async (_q, res) => {
       configured: true,
       items,
       scannedAt: cache.scannedAt,
+      wudUrl: wudPublicBase(),
       message: items.length
         ? `${items.length} update(s) from What's Up Docker`
         : 'All watched images are up to date',
@@ -812,6 +1025,13 @@ app.post('/domains/check-all', auth, async (req: Authed, res) => {
   await audit(req, 'domain.check_all', 'domain', null, 'success', { count: domains.length });
   ok(res, { checked: results.length, results });
 });
+setTimeout(() => {
+  void runApplicationHealthChecks().catch(() => undefined);
+}, 12_000);
+setInterval(() => {
+  void runApplicationHealthChecks().catch(() => undefined);
+}, 5 * 60 * 1000);
+
 app.listen(PORT, '0.0.0.0', () =>
   console.log(`Homelab Central API listening on ${PORT}`),
 );
