@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, Suspense, type ReactNode } from 'react';
+import { useEffect, useState, Suspense, useTransition, type ReactNode } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { selfhIconUrl } from '@/lib/selfhIcon';
 import {
@@ -252,6 +252,11 @@ function Login({ onLogin }: { onLogin: () => void }) {
               body: JSON.stringify({ email, password }),
             });
             await api('/auth/me');
+            try {
+              sessionStorage.setItem('hc-authed', '1');
+            } catch {
+              /* private mode */
+            }
             onLogin();
           } catch (x) {
             setError((x as Error).message);
@@ -302,14 +307,52 @@ const slugToPage = (slug: string[] | undefined): string => {
   return NAV_IDS.has(seg) ? seg : 'overview';
 };
 
+function DashboardSkeleton() {
+  return (
+    <div className="shell">
+      <aside className="sidebar skeleton-sidebar">
+        <div className="skel skel-brand" />
+        <div className="skel skel-nav" />
+        <div className="skel skel-nav" />
+        <div className="skel skel-nav" />
+      </aside>
+      <main className="main">
+        <header className="topbar skel-topbar">
+          <div className="skel skel-line w-40" />
+          <div className="skel skel-line w-24" />
+        </header>
+        <div className="content">
+          <PageSkeleton />
+        </div>
+      </main>
+    </div>
+  );
+}
+function PageSkeleton() {
+  return (
+    <div className="page-skeleton">
+      <div className="skel skel-line w-48" />
+      <div className="skel skel-line w-72" />
+      <div className="skel skel-panel" />
+      <div className="skel-grid">
+        <div className="skel skel-card" />
+        <div className="skel skel-card" />
+        <div className="skel skel-card" />
+      </div>
+    </div>
+  );
+}
 function HomeDashboard() {
   const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
+  const [navPending, startNavTransition] = useTransition();
   const slug = params.slug as string[] | undefined;
   const page = slugToPage(slug);
   const setPage = (id: string) => {
-    router.push(id === 'overview' ? '/' : `/${encodeURIComponent(id)}`, { scroll: false });
+    startNavTransition(() => {
+      router.push(id === 'overview' ? '/' : `/${encodeURIComponent(id)}`, { scroll: false });
+    });
   };
   // Legacy bookmarks: /?view=applications → /applications
   useEffect(() => {
@@ -321,7 +364,14 @@ function HomeDashboard() {
     const seg = slug?.[0];
     if (seg && !NAV_IDS.has(seg)) router.replace('/');
   }, [slug, router]);
-  const [authed, setAuthed] = useState<boolean | null>(null);
+  const [authed, setAuthed] = useState<boolean | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return sessionStorage.getItem('hc-authed') === '1' ? true : null;
+    } catch {
+      return null;
+    }
+  });
   const [summary, setSummary] = useState<Summary>({ status: "Checking" });
   const [apps, setApps] = useState<AppItem[]>([]);
   const [containers, setContainers] = useState<any[]>([]);
@@ -354,9 +404,23 @@ function HomeDashboard() {
     }
   }, []);
   useEffect(() => {
-    api("/auth/me")
-      .then(() => setAuthed(true))
-      .catch(() => setAuthed(false));
+    api('/auth/me')
+      .then(() => {
+        setAuthed(true);
+        try {
+          sessionStorage.setItem('hc-authed', '1');
+        } catch {
+          /* private mode */
+        }
+      })
+      .catch(() => {
+        setAuthed(false);
+        try {
+          sessionStorage.removeItem('hc-authed');
+        } catch {
+          /* private mode */
+        }
+      });
   }, []);
   const refresh = () => {
     api("/dashboard/summary")
@@ -506,8 +570,7 @@ function HomeDashboard() {
       setBusy(false);
     }
   };
-  if (authed === null)
-    return <div className="loading">Loading Homelab Central…</div>;
+  if (authed === null) return <DashboardSkeleton />;
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   const title = pageTitle;
   return (
@@ -556,7 +619,12 @@ function HomeDashboard() {
           <button
             className="nav-item"
             onClick={async () => {
-              await api("/auth/logout", { method: "POST" }).catch(() => {});
+              await api('/auth/logout', { method: 'POST' }).catch(() => {});
+              try {
+                sessionStorage.removeItem('hc-authed');
+              } catch {
+                /* private mode */
+              }
               setAuthed(false);
             }}
           >
@@ -690,7 +758,11 @@ function HomeDashboard() {
             </button>
           </div>
         </header>
-        <div className="content">
+        <div className={`content${navPending ? ' content-pending' : ''}`}>
+          {navPending ? (
+            <PageSkeleton />
+          ) : (
+          <>
           <div className="page-heading">
             <div>
               <div className="eyebrow">HOMELAB OVERVIEW</div>
@@ -877,6 +949,8 @@ function HomeDashboard() {
             </section>
           )}
           {page === 'settings' && <SettingsPage onNotice={pushNoticeScoped} />}
+          </>
+          )}
         </div>
       </main>
       <ToastStack
@@ -1733,7 +1807,7 @@ function Updates({
           target="_blank"
           rel="noreferrer"
         >
-          Open in WUD
+          Open WUD containers
         </a>
       )}
     </div>
@@ -2121,21 +2195,21 @@ function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) =
             onChange={(e) => setAlerts({ ...alerts, cooldownMinutes: Number(e.target.value) })}
           />
         </label>
-        <label className="check-row">
+        <label className="alert-toggle">
           <input
             type="checkbox"
             checked={alerts.inAppEnabled}
             onChange={(e) => setAlerts({ ...alerts, inAppEnabled: e.target.checked })}
           />
-          Show in-app notifications (bell icon)
+          <span>Show in-app notifications (bell icon)</span>
         </label>
-        <label className="check-row">
+        <label className="alert-toggle">
           <input
             type="checkbox"
             checked={alerts.emailEnabled}
             onChange={(e) => setAlerts({ ...alerts, emailEnabled: e.target.checked })}
           />
-          Email all active maintenance recipients when SMTP is configured
+          <span>Email all active maintenance recipients when SMTP is configured</span>
         </label>
         <button className="btn primary" type="submit">
           Save alert settings
@@ -2200,7 +2274,7 @@ function SettingsPage({ onNotice }: { onNotice: (s: string, tone?: NoticeTone) =
 
 export default function Home() {
   return (
-    <Suspense fallback={<div className="loading">Loading Homelab Central…</div>}>
+    <Suspense fallback={<DashboardSkeleton />}>
       <HomeDashboard />
     </Suspense>
   );

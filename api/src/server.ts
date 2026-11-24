@@ -527,10 +527,8 @@ const mapWudItem = (c: any) => {
       ? `docker pull ${imageName.includes(':') ? imageName.split(':')[0] : imageName}:${availableTag}`
       : null;
   const base = wudPublicBase();
-  const wudLink =
-    base && c.id
-      ? `${base}/#/containers/${encodeURIComponent(String(c.id))}`
-      : base;
+  // WUD uses a single containers list — no per-container detail route.
+  const wudLink = base ? `${base}/containers` : null;
   return {
     id: c.id,
     name: c.name,
